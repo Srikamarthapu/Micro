@@ -1,0 +1,11 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+._*
+qa/*
+!qa/reference-app.png
+!qa/micro-full-final.png
+!qa/micro-iphone-final.png
+!qa/micro-pixel-final.png
+!qa/comparison-final.png
