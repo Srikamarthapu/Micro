@@ -1994,6 +1994,17 @@
   object-position: 50% 62%;
 }
 
+.auth-hero-map { position: relative; }
+.auth-hero-map > img { object-position: 50% 50%; }
+
+.auth-hero-map .auth-hero-pin {
+  position: absolute;
+  width: auto;
+  height: 30px;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 3px 5px rgba(18, 34, 56, 0.28));
+}
+
 .auth-welcome-actions {
   display: grid;
   gap: 9px;

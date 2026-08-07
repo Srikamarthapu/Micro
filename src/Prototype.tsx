@@ -213,6 +213,41 @@ const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? import.meta.env.V
 // for development; a real Map ID should be created before any deploy.
 const mapsMapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID ?? "DEMO_MAP_ID";
 
+// Web Mercator, matching how Google frames a static map, so a task coordinate
+// becomes a pixel offset from the requested centre.
+function projectToWorld(point: LatLng) {
+  const clampedSin = Math.min(Math.max(Math.sin((point.lat * Math.PI) / 180), -0.9999), 0.9999);
+  return {
+    x: 256 * (0.5 + point.lng / 360),
+    y: 256 * (0.5 - Math.log((1 + clampedSin) / (1 - clampedSin)) / (4 * Math.PI)),
+  };
+}
+
+function pixelOffsetFromCenter(point: LatLng, center: LatLng, zoom: number) {
+  const worldScale = 2 ** zoom;
+  const projected = projectToWorld(point);
+  const projectedCenter = projectToWorld(center);
+  return { x: (projected.x - projectedCenter.x) * worldScale, y: (projected.y - projectedCenter.y) * worldScale };
+}
+
+function staticMapUrl(center: LatLng, zoom: number, width: number, height: number) {
+  if (!mapsApiKey) return "";
+  const params = new URLSearchParams({
+    center: `${center.lat},${center.lng}`,
+    zoom: String(zoom),
+    size: `${width}x${height}`,
+    scale: "2",
+    maptype: "roadmap",
+    key: mapsApiKey,
+  });
+  const styles = [
+    "feature:poi|visibility:off",
+    "feature:transit|visibility:off",
+    "feature:road|element:labels.icon|visibility:off",
+  ];
+  return `https://maps.googleapis.com/maps/api/staticmap?${params}&${styles.map((style) => `style=${encodeURIComponent(style)}`).join("&")}`;
+}
+
 type Task = {
   id: string;
   title: string;
@@ -1357,9 +1392,7 @@ function AuthWelcomeScreen() {
           <p>Post clearly scoped help, or lend a hand nearby.</p>
         </section>
         <p className="auth-trust-strip" aria-label="Micro participation principles">Clear scope<span aria-hidden="true">·</span>Fair pay<span aria-hidden="true">·</span>Community care</p>
-        <figure className="auth-hero-art">
-          <img src="/assets/micro/front-yard-leaves.webp" alt="A front yard with raked leaves, filled green-waste bags, and a rake resting by the gate" draggable={false} />
-        </figure>
+        <AuthHeroMap />
         <div className="auth-welcome-actions">
           <button className="primary-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account <ArrowRight size={19} /></button>
           <button className="secondary-button" onClick={() => flow.push(makeLoginScreen())}>I already have an account</button>
@@ -1368,6 +1401,59 @@ function AuthWelcomeScreen() {
         <p className="auth-legal-note">Exact addresses stay private until a confirmed match.</p>
       </main>
     </MobileScroll>
+  );
+}
+
+// A still map, not the interactive one: nobody should be panning a sign-in
+// screen, and one fixed URL caches instead of billing a map load per visit.
+const heroMapWidth = 480;
+const heroMapHeight = 280;
+const heroMapZoom = 11;
+const heroTaskIds = ["leaves", "boxes", "tablet", "pantry"];
+
+function AuthHeroMap() {
+  const heroArea = areaById("all");
+  const frameRef = useRef<HTMLElement>(null);
+  const [frame, setFrame] = useState({ width: 0, height: 0 });
+  const url = staticMapUrl(heroArea.center, heroMapZoom, heroMapWidth, heroMapHeight);
+
+  useEffect(() => {
+    const node = frameRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setFrame({ width: entry.contentRect.width, height: entry.contentRect.height }));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [url]);
+
+  if (!url) {
+    return (
+      <figure className="auth-hero-art">
+        <img src="/assets/micro/front-yard-leaves.webp" alt="A front yard with raked leaves, filled green-waste bags, and a rake by the gate" draggable={false} />
+      </figure>
+    );
+  }
+  // object-fit: cover scales the requested image by this factor and centres it,
+  // so pin offsets scale by exactly the same amount. Measured rather than assumed,
+  // because the frame's aspect does not match the requested image's.
+  const coverScale = frame.width && frame.height
+    ? Math.max(frame.width / heroMapWidth, frame.height / heroMapHeight)
+    : 0;
+  const pins = coverScale
+    ? tasks
+        .filter((task) => heroTaskIds.includes(task.id))
+        .map((task) => {
+          const offset = pixelOffsetFromCenter(approximateCoords(task), heroArea.center, heroMapZoom);
+          return { id: task.id, x: offset.x * coverScale, y: offset.y * coverScale };
+        })
+        .filter((pin) => Math.abs(pin.x) < frame.width / 2 - 20 && Math.abs(pin.y) < frame.height / 2 - 20)
+    : [];
+  return (
+    <figure className="auth-hero-art auth-hero-map" ref={frameRef}>
+      <img src={url} alt="Map of Oakland and Alameda showing approximate areas where neighbours are asking for help" draggable={false} />
+      {pins.map((pin) => (
+        <img key={pin.id} className="auth-hero-pin" style={{ left: `calc(50% + ${pin.x}px)`, top: `calc(50% + ${pin.y}px)` }} src="/assets/micro/micro-mark.png" alt="" draggable={false} />
+      ))}
+    </figure>
   );
 }
 
