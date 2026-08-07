@@ -47,7 +47,7 @@ import "@fontsource-variable/atkinson-hyperlegible-next";
 import "@fontsource-variable/fraunces";
 import { AdvancedMarker, AdvancedMarkerAnchorPoint, APILoadingStatus, APIProvider, Circle, Map as GoogleMap, useApiLoadingStatus, useMap } from "@vis.gl/react-google-maps";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import { Component, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ErrorInfo, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   BottomSheet,
@@ -1396,7 +1396,7 @@ function AuthWelcomeScreen() {
         <div className="auth-welcome-actions">
           <button className="primary-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account <ArrowRight size={19} /></button>
           <button className="secondary-button" onClick={() => flow.push(makeLoginScreen())}>I already have an account</button>
-          {!auth.configured ? <button className="text-button auth-demo-link" onClick={auth.enterDemo}>Continue with the local demo</button> : null}
+          <button className="text-button auth-demo-link" onClick={auth.enterDemo}>Continue with the local demo</button>
         </div>
         <p className="auth-legal-note">Exact addresses stay private until a confirmed match.</p>
       </main>
@@ -1674,6 +1674,7 @@ function SignUpScreen({ accountType }: { accountType: AccountType }) {
           </button>
           {error ? <p id="signup-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
           <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Creating account…" : "Create account"}</button>
+          <button className="text-button auth-demo-link" type="button" onClick={() => { keyboard.hide(); auth.enterDemo(); }}>Continue with the local demo</button>
         </form>
       </main>
     </MobileScroll>
@@ -2060,6 +2061,7 @@ function NearbyScreen() {
           </section>
         </div>
       </MobileScroll>
+      <div className="nearby-status-scrim" aria-hidden="true" />
 
       <BottomSheet open={filtersOpen} onOpenChange={setFiltersOpen} title="Filter nearby help" description="Refine the list by mode, time, distance, or youth eligibility." snap={0.78}>
         <div className="sheet-form">
@@ -2126,32 +2128,50 @@ function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable, expande
   return (
     <APIProvider apiKey={mapsApiKey}>
       <MapStatusWatch onUnavailable={onUnavailable} />
-      <GoogleMap
-        className="nearby-google-map"
-        mapId={mapsMapId}
-        defaultCenter={area.center}
-        defaultZoom={area.zoom}
-        minZoom={area.minZoom}
-        maxZoom={area.maxZoom}
-        restriction={{ latLngBounds: areaBounds(area), strictBounds: true }}
-        gestureHandling="greedy"
-        disableDefaultUI
-        clickableIcons={false}
-        reuseMaps
-        onZoomChanged={(event) => setZoom(event.detail.zoom)}
-      >
-        {tasks.map((task) => (
-          <TaskAreaCircle key={`area-${task.id}`} task={task} active={activeTaskId === task.id} />
-        ))}
-        {tasks.map((task) => (
-          <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} size={markerSize} onSelect={onSelect} />
-        ))}
-      </GoogleMap>
+      <MapRenderBoundary onUnavailable={onUnavailable}>
+        <GoogleMap
+          className="nearby-google-map"
+          mapId={mapsMapId}
+          defaultCenter={area.center}
+          defaultZoom={area.zoom}
+          minZoom={area.minZoom}
+          maxZoom={area.maxZoom}
+          restriction={{ latLngBounds: areaBounds(area), strictBounds: true }}
+          gestureHandling="greedy"
+          disableDefaultUI
+          clickableIcons={false}
+          reuseMaps
+          onZoomChanged={(event) => setZoom(event.detail.zoom)}
+        >
+          {tasks.map((task) => (
+            <TaskAreaCircle key={`area-${task.id}`} task={task} active={activeTaskId === task.id} />
+          ))}
+          {tasks.map((task) => (
+            <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} size={markerSize} onSelect={onSelect} />
+          ))}
+        </GoogleMap>
+      </MapRenderBoundary>
       <MapAreaSync area={area} />
       <MapHealthCheck onUnavailable={onUnavailable} />
       <MapZoomControls area={area} zoom={zoom} expanded={expanded} onToggleExpanded={onToggleExpanded} />
     </APIProvider>
   );
+}
+
+class MapRenderBoundary extends Component<{ children: ReactNode; onUnavailable: (reason: string) => void }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(_error: Error, _info: ErrorInfo) {
+    this.props.onUnavailable("Map could not load · check the API key restrictions");
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
 }
 
 // Surfaces an unusable map (API not enabled, key rejected) instead of leaving an
