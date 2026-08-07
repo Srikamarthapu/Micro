@@ -1049,9 +1049,9 @@
   background: #f4f9fd;
 }
 
-/* Fixed iOS-style glass layer: content can ease into the status-bar area while
-   the live device time and indicators stay crisp above it. */
-.nearby-status-scrim {
+/* Fixed iOS-style glass layer for every Micro screen: content can ease into the
+   status-bar area while the live device time and indicators stay crisp above it. */
+.app-status-scrim {
   position: absolute;
   z-index: 60;
   top: 0;

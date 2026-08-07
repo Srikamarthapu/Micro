@@ -1281,7 +1281,7 @@ const rootScreen: FlowScreen = {
 };
 
 export default function Prototype() {
-  return <AuthProvider><AuthBoundary /></AuthProvider>;
+  return <AuthProvider><AuthBoundary /><div className="app-status-scrim" aria-hidden="true" /></AuthProvider>;
 }
 
 function AuthBoundary() {
@@ -2090,7 +2090,6 @@ function NearbyScreen() {
           </section>
         </div>
       </MobileScroll>
-      <div className="nearby-status-scrim" aria-hidden="true" />
 
       <BottomSheet open={filtersOpen} onOpenChange={setFiltersOpen} title="Filter nearby help" description="Refine the list by mode, time, distance, or youth eligibility." snap={0.78}>
         <div className="sheet-form">
