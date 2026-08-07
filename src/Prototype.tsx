@@ -2882,6 +2882,58 @@ function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 1
   );
 }
 
+function organizationAccessDetails(auth: AuthContextValue) {
+  const status = auth.organization?.verification_status ?? "pending";
+  const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+
+  if (status === "suspended") {
+    return {
+      status,
+      statusLabel,
+      title: "Organization access paused",
+      copy: "Organization sponsorship tools are unavailable while access is suspended. Personal task permissions remain separate.",
+    };
+  }
+  if (status === "rejected") {
+    return {
+      status,
+      statusLabel,
+      title: "Verification needs attention",
+      copy: "The organization profile needs review before sponsorship requests can be opened.",
+    };
+  }
+  if (status === "pending") {
+    return {
+      status,
+      statusLabel,
+      title: "Verification is in review",
+      copy: "Regular task features remain available according to your account permissions. Sponsorship tools unlock after organization review.",
+    };
+  }
+  if (auth.capabilities.can_receive_sponsorship_requests && auth.canSponsor) {
+    return {
+      status,
+      statusLabel,
+      title: "Requests and funding are ready",
+      copy: "Review incoming requests, fund eligible help, and track sponsored tasks in one place.",
+    };
+  }
+  if (auth.capabilities.can_receive_sponsorship_requests) {
+    return {
+      status,
+      statusLabel,
+      title: "Sponsorship requests are ready",
+      copy: "Your organization can review requests. Funding remains locked until sponsorship is enabled.",
+    };
+  }
+  return {
+    status,
+    statusLabel,
+    title: "Organization verified",
+    copy: "Sponsorship access has not been enabled for this organization yet.",
+  };
+}
+
 function ActivityScreen() {
   const flow = useFlow();
   const auth = useAuth();
@@ -2918,13 +2970,24 @@ function ActivityScreen() {
       ]),
   ];
   const visibleCompletedItems = showAllHistory ? completedItems : completedItems.slice(0, 1);
+  const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
+  const organizationAccess = organizationAccessDetails(auth);
+  const openSponsorshipRequests = auth.capabilities.can_receive_sponsorship_requests && !sponsorFunded ? 1 : 0;
 
   return (
     <MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded">
-        <PageTitle eyebrow="Your commitments" title="Activity" subtitle="Every task keeps one plain-language status from match through completion." />
+        <PageTitle eyebrow={isLiveNonprofit ? "Personal + organization activity" : "Your commitments"} title="Activity" subtitle={isLiveNonprofit ? "Your tasks and organization sponsorships, kept in one place." : "Every task keeps one plain-language status from match through completion."} />
         <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section>
-        <button className="notification-entry" onClick={() => flow.push(makeNotificationsScreen())}><span><Bell size={20} weight="fill" /><strong>Notifications</strong></span><small>Role-aware updates</small><ArrowRight size={18} /></button>
+        {isLiveNonprofit ? <button className="organization-entry" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}>
+          <span className="organization-entry-icon"><Buildings size={23} weight="fill" /></span>
+          <span className="organization-entry-copy">
+            <strong>{auth.organization?.name ?? "Organization workspace"}</strong>
+            <small>{openSponsorshipRequests ? `${openSponsorshipRequests} sponsorship request to review` : organizationAccess.title}</small>
+          </span>
+          <span className="organization-entry-end"><span className="organization-status" data-status={organizationAccess.status}>{organizationAccess.statusLabel}</span><ArrowRight size={19} weight="bold" /></span>
+        </button> : null}
+        <button className="notification-entry" onClick={() => flow.push(makeNotificationsScreen())}><span><Bell size={20} weight="fill" /><strong>Notifications</strong></span><small>{isLiveNonprofit ? "Tasks + sponsorships" : "Role-aware updates"}</small><ArrowRight size={18} /></button>
         {hasActiveCommitment ? <fieldset className="perspective-switch"><legend>Prototype perspective</legend><div className="segmented-row two-segments"><button aria-pressed={activityPerspective === "helper"} data-active={activityPerspective === "helper" ? "true" : "false"} onClick={() => setActivityPerspective("helper")}>{showCommunity ? "Volunteer" : "Helper"}</button><button aria-pressed={activityPerspective === "requester"} data-active={activityPerspective === "requester" ? "true" : "false"} onClick={() => setActivityPerspective("requester")}>Requester</button></div><p>{activityPerspective === "helper" ? "Your accepted commitment and actions." : "A clearly labeled seeded requester view for testing confirmation and arrival support."}</p></fieldset> : null}
         {persona === "guardian" && guardianTask ? <section className="guardian-activity-card"><ShieldCheck size={24} weight="fill" /><div><span>{youthApprovalTaskId ? "Approval requested" : guardianSupervisedTaskId === guardianTask.id ? "Sam’s task lifecycle" : "Approved for Sam"}</span><strong>{guardianTask.title}</strong><small>{guardianSupervisedTaskId === guardianTask.id && guardianSupervisionStatus ? guardianSupervisionStatus : "This is not your commitment. Review it from Youth Mode."}</small></div><button className="secondary-button" onClick={() => { setActiveTab("profile"); }}>Open Youth Mode</button></section> : null}
         {showReopened ? <section className="activity-group"><div className="section-heading"><h2>Needs a new match</h2><span>1</span></div><article className="posted-card"><div className="mode-badge"><Warning size={14} weight="fill" /> Reopened</div><h3>{activeTask.title}</h3><p>Payment hold released · visible in Nearby again</p><button className="secondary-button" onClick={() => { setSelectedTaskId(activeTask.id); setActiveTab("nearby"); }}>See reopened listing</button></article></section> : null}
@@ -2941,13 +3004,13 @@ function ActivityScreen() {
         </section> : null}
         {showCommunity && communityTask ? <section className="activity-group"><div className="section-heading"><h2>{activityPerspective === "helper" ? "Community commitment" : "Community request"}</h2><span>1</span></div><button className="activity-card community-activity-card" onClick={() => flow.push(makeCommunityJourneyScreen(communityTask))}><div className="activity-top"><span className="status-badge community-status"><HandHeart size={14} weight="fill" /> {communityReported ? "Support review" : communityStage}</span><ArrowRight size={19} /></div><h3>{communityTask.title}</h3><p>{communityTask.time} · {communityTask.area}</p><div className="activity-bottom"><span>{communityReported ? "Participant actions paused" : "Volunteer · no payment"}</span><strong>{activityPerspective === "helper" ? "Open commitment" : "Review request"}</strong></div></button></section> : null}
         {ownedByPersona.length ? <section className="activity-group"><div className="section-heading"><h2>Posted by you</h2><span>{ownedByPersona.length}</span></div>{ownedByPersona.map((task) => { const paused = Boolean(task.listingPaused); return <article key={task.id} className="posted-card"><div className="mode-badge">{paused ? <Warning size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />} {paused ? "Paused" : "Published"}</div><h3>{task.title}</h3><p>{task.time} · {paused ? "Hidden from Nearby" : `${task.area} shown approximately`}</p><div className="success-actions">{!paused ? <button className="secondary-button" onClick={() => { setSelectedTaskId(task.id); setActiveTab("nearby"); }}>Preview listing</button> : null}<button className="text-button" onClick={() => setOwnedTasks((current) => current.map((listing) => listing.id === task.id ? { ...listing, listingPaused: !paused } : listing))}>{paused ? "Resume listing" : "Pause listing"}</button></div></article>; })}</section> : null}
-        {persona === "adult" && (auth.demoMode || auth.capabilities.can_receive_sponsorship_requests) ? <section className="activity-group">
+        {persona === "adult" && auth.demoMode ? <section className="activity-group">
           <div className="section-heading"><h2>Sponsored help</h2><span>1</span></div>
           <article className="sponsor-card">
             <div className="mode-badge"><Sparkle size={14} weight="fill" /> {sponsorFunded ? "Sponsored" : sponsorSeeking ? "Seeking Sponsor" : "Community Help"}</div>
             <h3>Grocery pickup for Ana</h3>
             <p>{sponsorFunded ? "Funded in test mode · helper earns $24" : sponsorSeeking ? "Volunteer window ended · recipient pays $0" : "Volunteer window open · no payment offered"}</p>
-            {!sponsorSeeking && !sponsorFunded ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="secondary-button" onClick={() => flow.push(makeSponsorScreen())}>{sponsorFunded ? "View funded task" : auth.demoMode || auth.canSponsor ? "Sponsor this task" : "View sponsor request"}</button>}
+            {!sponsorSeeking && !sponsorFunded ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="secondary-button" onClick={() => flow.push(makeSponsorScreen())}>{sponsorFunded ? "View funded task" : "Sponsor this task"}</button>}
           </article>
         </section> : null}
         {persona !== "guardian" ? <section className="activity-group completed-group">
@@ -2966,16 +3029,28 @@ function makeNotificationsScreen(): FlowScreen {
 
 function NotificationsScreen() {
   const flow = useFlow();
-  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled } = useMicro();
+  const auth = useAuth();
+  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded } = useMicro();
   const openTab = (tab: TabId) => { setActiveTab(tab); flow.pop(); };
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
   const actorTasks = [activeTask, communityTask].filter((task): task is Task => Boolean(task && actor && acceptedTaskActors[task.id] === actor && (acceptedTaskIds.includes(task.id) || taskEvents[task.id]?.length)));
   const lifecycleTask = actorTasks.find((task) => acceptedTaskIds.includes(task.id)) ?? [...actorTasks].sort((first, second) => (taskEvents[second.id]?.at(-1)?.id ?? 0) - (taskEvents[first.id]?.at(-1)?.id ?? 0))[0];
   const activeMatch = Boolean(lifecycleTask && acceptedTaskIds.includes(lifecycleTask.id));
   const latestEvent = lifecycleTask ? taskEvents[lifecycleTask.id]?.at(-1) : null;
+  const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
   const notices: { icon: Icon; title: string; copy: string; time: string; tab: TabId }[] = [
     { icon: Bell, title: "Nearby help refreshed", copy: "Browse the current local paid, volunteer, and sponsored fixtures.", time: "Now", tab: "nearby" },
   ];
+  if (isLiveNonprofit) {
+    const organizationAccess = organizationAccessDetails(auth);
+    notices.unshift({
+      icon: sponsorFunded ? SealCheck : auth.capabilities.can_receive_sponsorship_requests ? Sparkle : LockKey,
+      title: sponsorFunded ? "Sponsored task funded" : auth.capabilities.can_receive_sponsorship_requests ? "Sponsorship request ready" : organizationAccess.title,
+      copy: sponsorFunded ? "The local preview records a funded helper task with a $0 recipient total." : auth.capabilities.can_receive_sponsorship_requests ? "Open Activity to review the local request fixture and your organization’s funding access." : organizationAccess.copy,
+      time: "Now",
+      tab: "activity",
+    });
+  }
   if (youthApprovalTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: persona === "guardian" ? "Youth task needs your review" : "Guardian review requested", copy: "The exact pantry-task scope and time are ready for a task-specific decision.", time: "Now", tab: "profile" });
   else if (youthApprovedTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: "Youth task approved", copy: "Approval covers only this task, scope, and scheduled time; no assignment exists until acceptance.", time: "Now", tab: "profile" });
   else if (persona === "guardian" && guardianSupervisedTaskId) notices.unshift({ icon: ShieldCheck, title: "Youth task lifecycle", copy: guardianSupervisionStatus || "Sam’s task remains visible for task-specific guardian context.", time: "Now", tab: "profile" });
@@ -3239,6 +3314,82 @@ function RequesterNoShowScreen({ task, onDone }: { task: Task; onDone: () => voi
   return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><div className="alert-illustration"><MapPin size={38} weight="duotone" /></div><p className="eyebrow">Helper arrival protection</p><h1>The requester isn’t available.</h1><p className="lead">Use this only after reaching the agreed place and trying the protected task thread.</p><div className="review-list"><ReviewRow icon={MapPin} title="Arrive at the agreed place" text={getTaskDetails(task).address} /><ReviewRow icon={ChatCircle} title="Message in the task thread" text="Give the requester a reasonable chance to respond without moving contact off-platform." /><ReviewRow icon={CurrencyDollar} title="Show-up protection" text={`The UI records a $${showUpAmount} helper show-up payment and releases the remaining test hold.`} /></div><button className="choice-row safety-confirm" aria-pressed={arrived} data-selected={arrived ? "true" : "false"} onClick={() => setArrived((current) => !current)}><span><strong>I arrived at the agreed place and time</strong><small>Location is a protected local fixture.</small></span><span className="checkbox">{arrived ? <Check size={14} weight="bold" /> : null}</span></button><button className="choice-row safety-confirm" aria-pressed={contacted} data-selected={contacted ? "true" : "false"} onClick={() => setContacted((current) => !current)}><span><strong>I messaged in the task thread and waited 15 minutes</strong><small>Both checks are required for the local receipt.</small></span><span className="checkbox">{contacted ? <Check size={14} weight="bold" /> : null}</span></button><button className="danger-button" disabled={!arrived || !contacted} onClick={() => { setAcceptedTaskIds((current) => current.filter((id) => id !== task.id)); setPaidStage("Reopened"); appendTaskEvent(setTaskEvents, task.id, `Helper reported requester no-show after arrival and grace checks. $${showUpAmount} test show-up payment recorded; remainder released.`); if (persona === "youth") setGuardianSupervisionStatus(`Sam reported the requester unavailable; a $${showUpAmount} test show-up payment was recorded and the task reopened.`); setReported(true); }}>Record requester no-show</button></div></MobileScroll>;
 }
 
+function makeOrganizationWorkspaceScreen(): FlowScreen {
+  return { id: "organization-workspace", headerHeight: 66, header: (flow) => <RouteHeader title="Sponsorships" onBack={flow.pop} />, render: () => <OrganizationWorkspaceScreen /> };
+}
+
+function OrganizationWorkspaceScreen() {
+  const flow = useFlow();
+  const auth = useAuth();
+  const { sponsorFunded, setActiveTab } = useMicro();
+  const distanceLabel = useTaskDistanceLabel();
+  const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
+  const canReviewRequests = auth.capabilities.can_receive_sponsorship_requests;
+  const canFund = canReviewRequests && auth.capabilities.can_sponsor_tasks;
+  const organizationAccess = organizationAccessDetails(auth);
+  const openRequests = canReviewRequests && !sponsorFunded ? 1 : 0;
+
+  if (!isLiveNonprofit || !auth.organization) {
+    return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><section className="empty-state organization-guard"><LockKey size={28} weight="fill" /><h1>Organization workspace unavailable</h1><p>This route is reserved for signed-in nonprofit organization accounts. Your regular task experience is unchanged.</p><button className="secondary-button" onClick={flow.pop}>Back to Activity</button></section></div></MobileScroll>;
+  }
+
+  const openSponsoredPost = () => {
+    if (!auth.capabilities.can_sponsor_tasks) return;
+    setActiveTab("post");
+    flow.pop();
+  };
+
+  return (
+    <MobileScroll className="app-screen route-scroll">
+      <div className="route-page route-bottom-pad organization-workspace-page">
+        <section className="organization-workspace-hero" data-status={organizationAccess.status} aria-labelledby="organization-workspace-title">
+          <div className="organization-workspace-identity">
+            <span className="organization-workspace-mark"><Buildings size={27} weight="fill" /></span>
+            <div><p className="eyebrow">Sponsorship workspace</p><h1 id="organization-workspace-title">{auth.organization.name}</h1><p>{auth.organization.role === "owner" ? "Organization owner" : auth.organization.role === "admin" ? "Organization admin" : "Organization member"}</p></div>
+            <span className="organization-status" data-status={organizationAccess.status}>{organizationAccess.statusLabel}</span>
+          </div>
+          <p className="organization-workspace-summary">{organizationAccess.copy}</p>
+          {canReviewRequests ? <dl className="organization-workspace-metrics" aria-label="Local sponsorship preview summary">
+            <div><dt>Open requests</dt><dd>{openRequests}</dd></div>
+            <div><dt>Sponsored</dt><dd>{sponsorFunded ? 1 : 0}</dd></div>
+            <div><dt>Recipient total</dt><dd>$0</dd></div>
+          </dl> : null}
+        </section>
+
+        <section className="activity-group" aria-labelledby="sponsorship-requests-title">
+          <div className="section-heading"><h2 id="sponsorship-requests-title">{sponsorFunded ? "Recently sponsored" : "Requests to review"}</h2><span>{canReviewRequests ? 1 : 0}</span></div>
+          {canReviewRequests ? <article className="sponsorship-request-card">
+            <div className="sponsorship-request-top"><span className="status-badge sponsored-request-status"><Sparkle size={14} weight="fill" /> {sponsorFunded ? "Funded in preview" : "New request · preview"}</span><strong>$26 total</strong></div>
+            <h3>Grocery pickup for a neighbor</h3>
+            <p>A helper would pick up a prepaid grocery order and carry it to the front door. Recipient details stay protected until a safe match.</p>
+            <div className="task-facts"><span><MapPin size={17} /> {sponsoredFixtureTask.area} · {distanceLabel(sponsoredFixtureTask)}</span><span><Clock size={17} /> About 45 min</span></div>
+            <div className="sponsorship-request-money"><span><strong>$24</strong><small>Helper receives</small></span><span><strong>$0</strong><small>Recipient pays</small></span></div>
+            <button className={canFund && !sponsorFunded ? "primary-button" : "secondary-button"} onClick={() => {
+              if (!auth.capabilities.can_receive_sponsorship_requests) return;
+              flow.push(makeSponsorScreen());
+            }}>{sponsorFunded ? "View sponsored task" : canFund ? "Review and fund" : "View request"}</button>
+          </article> : <section className="sponsorship-locked-card" aria-labelledby="sponsorship-locked-title"><span><LockKey size={23} weight="fill" /></span><div><strong id="sponsorship-locked-title">Sponsorship requests are locked</strong><p>{organizationAccess.copy}</p></div></section>}
+        </section>
+
+        {!canFund ? <section className="organization-capabilities" aria-labelledby="organization-access-title">
+          <div className="section-heading"><h2 id="organization-access-title">Access details</h2></div>
+          <div className="organization-capability-row" data-enabled={auth.capabilities.can_post_tasks && auth.capabilities.can_accept_tasks ? "true" : "false"}><span>{auth.capabilities.can_post_tasks && auth.capabilities.can_accept_tasks ? <CheckCircle size={19} weight="fill" /> : <LockKey size={19} weight="fill" />}</span><div><strong>Regular task features</strong><small>{auth.capabilities.can_post_tasks && auth.capabilities.can_accept_tasks ? "Posting and accepting are available for this account." : "Account permissions need to be refreshed."}</small></div></div>
+          <div className="organization-capability-row" data-enabled={canReviewRequests ? "true" : "false"}><span>{canReviewRequests ? <CheckCircle size={19} weight="fill" /> : <LockKey size={19} weight="fill" />}</span><div><strong>Sponsorship requests</strong><small>{canReviewRequests ? "Review is enabled for this verified organization role." : "Unlocks only after verified organization access."}</small></div></div>
+          <div className="organization-capability-row" data-enabled="false"><span><LockKey size={19} weight="fill" /></span><div><strong>Sponsorship funding</strong><small>Funding stays locked until sponsorship is enabled.</small></div></div>
+        </section> : null}
+
+        {canFund ? <section className="organization-post-card" data-enabled="true">
+          <span><HandHeart size={23} weight="fill" /></span>
+          <div><strong>Post a sponsored task</strong><p>Open the reviewed catalog, then choose Sponsored when the selected task supports it.</p></div>
+          <button className="secondary-button" onClick={openSponsoredPost}>Open Post</button>
+        </section> : null}
+
+        <div className="truth-card organization-truth"><Info size={21} /><div><strong>Live access, local request fixtures</strong><span>Supabase controls the organization and capabilities shown here. Requests, payments, and task status remain in this browser preview; no real sponsorship or recipient record is created.</span></div></div>
+      </div>
+    </MobileScroll>
+  );
+}
+
 function makeSponsorScreen(): FlowScreen {
   return { id: "sponsor", headerHeight: 66, header: (flow) => <RouteHeader title="Sponsor help" onBack={flow.pop} />, render: () => <SponsorScreen /> };
 }
@@ -3247,16 +3398,25 @@ function SponsorScreen() {
   const auth = useAuth();
   const { sponsorFunded, setSponsorFunded, sponsorSeeking, setSponsorSeeking } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
-  const canFund = auth.demoMode || auth.canSponsor;
+  const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
+  const canReviewRequest = auth.demoMode || (isLiveNonprofit && auth.capabilities.can_receive_sponsorship_requests);
+  const canFund = auth.demoMode || (canReviewRequest && auth.capabilities.can_sponsor_tasks);
+  const requestSubmitted = isLiveNonprofit || sponsorSeeking;
+  const requestTitle = isLiveNonprofit ? "Grocery pickup for a neighbor" : "Grocery pickup for Ana";
+
+  if (!canReviewRequest) {
+    const organizationAccess = organizationAccessDetails(auth);
+    return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><section className="empty-state organization-guard"><LockKey size={28} weight="fill" /><h1>Sponsorship request unavailable</h1><p>{isLiveNonprofit ? organizationAccess.copy : "Only an eligible nonprofit organization can review this local sponsorship request fixture."}</p><div className="truth-card"><ShieldCheck size={21} weight="fill" /><div><strong>Request details stay protected</strong><span>Opening a route never grants sponsorship access; Micro checks the current database capability again here.</span></div></div></section></div></MobileScroll>;
+  }
   return (
     <MobileScroll className="app-screen route-scroll">
       <div className="route-page route-bottom-pad">
-        {sponsorFunded ? <section className="success-view"><span className="success-seal purple"><Sparkle size={42} weight="fill" /></span><p className="eyebrow">Sponsored in test mode</p><h1>Ana’s task can now pay a helper.</h1><p>The public task shows “Sponsored” and “helper receives $24.” The recipient’s total remains $0.</p><div className="truth-card"><Info size={22} /><div><strong>No real payment was taken</strong><span>This confirms only the intended UI state.</span></div></div></section> : <>
+        {sponsorFunded ? <section className="success-view" role="status"><span className="success-seal purple"><Sparkle size={42} weight="fill" /></span><p className="eyebrow">Sponsored in test mode</p><h1>The task can now pay a helper.</h1><p>The public task shows “Sponsored” and “helper receives $24.” The recipient’s total remains $0.</p><div className="truth-card"><Info size={22} /><div><strong>No real payment was taken</strong><span>This confirms only the intended local UI state.</span></div></div></section> : <>
           <p className="eyebrow">Turn a request into paid help</p><h1>Sponsor one small task.</h1><p className="lead">Fund the helper without exposing or labeling the person receiving help.</p>
-          <article className="sponsor-feature"><div className="mode-badge"><HandHeart size={14} weight="fill" /> {sponsorSeeking ? "Seeking Sponsor" : "Community Help request"}</div><h2>Grocery pickup for Ana</h2><p>{sponsorSeeking ? "The volunteer window ended without a match. A sponsor can now fund a helper." : "Pick up a prepaid grocery order and carry it to the front door."}</p><div className="task-facts"><span><MapPin size={17} /> {sponsoredFixtureTask.area} · {distanceLabel(sponsoredFixtureTask)}</span><span><Clock size={17} /> About 45 min</span></div></article>
-          <div className="sponsor-breakdown"><div><span>Helper receives</span><strong>$24</strong></div><div><span>Prototype fee</span><strong>$2</strong></div><div><span>Sponsor total</span><strong>$26</strong></div><div><span>Recipient pays</span><strong>$0</strong></div></div>
-          <div className="privacy-note"><ShieldCheck size={20} /><span>Your name is private by default. The task only shows that a sponsor funded it.</span></div>
-          {!sponsorSeeking ? <button className="secondary-button" disabled={!auth.demoMode && !auth.capabilities.can_receive_sponsorship_requests} onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek sponsor</button> : canFund ? <button className="primary-button" onClick={() => setSponsorFunded(true)}>Fund $26 in test mode</button> : <div className="truth-card" role="status"><LockKey size={21} /><div><strong>Sponsorship funding is locked</strong><span>Your nonprofit can receive requests, but funding requires verified sponsor access.</span></div></div>}
+          <article className="sponsor-feature"><div className="mode-badge"><HandHeart size={14} weight="fill" /> {requestSubmitted ? "Seeking Sponsor" : "Community Help request"}</div><h2>{requestTitle}</h2><p>{requestSubmitted ? "A protected local request is ready for nonprofit review. Funding would turn it into paid help." : "Pick up a prepaid grocery order and carry it to the front door."}</p><div className="task-facts"><span><MapPin size={17} /> {sponsoredFixtureTask.area} · {distanceLabel(sponsoredFixtureTask)}</span><span><Clock size={17} /> About 45 min</span></div></article>
+          <dl className="sponsor-breakdown" aria-label="Local sponsorship preview amounts"><div><dt>Helper receives</dt><dd>$24</dd></div><div><dt>Prototype fee</dt><dd>$2</dd></div><div><dt>Sponsor total</dt><dd>$26</dd></div><div><dt>Recipient pays</dt><dd>$0</dd></div></dl>
+          <div className="privacy-note"><ShieldCheck size={20} /><span>Sponsor identity is private by default. The public task only shows that an organization funded it.</span></div>
+          {isLiveNonprofit ? canFund ? <button className="primary-button" onClick={() => { if (!auth.capabilities.can_sponsor_tasks) return; setSponsorFunded(true); }}>Fund $26 in test mode</button> : <div className="truth-card"><LockKey size={21} /><div><strong>Sponsorship funding is locked</strong><span>Your nonprofit can review this request, but funding requires database-enabled sponsor access.</span></div></div> : !sponsorSeeking ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="primary-button" onClick={() => { if (!auth.demoMode) return; setSponsorFunded(true); }}>Fund $26 in test mode</button>}
         </>}
       </div>
     </MobileScroll>
@@ -3468,17 +3628,18 @@ function ProfileScreen() {
       ? { initials: "MK", name: "Maya Kim", detail: `Guardian profile · ${guardianLinked ? "Sam linked" : "link paused"}`, stats: [["4", "task reviews"], [guardianLinked ? "1" : "0", "youth linked"], ["100%", "decisions logged"]], reliability: "100%" }
       : { initials: "AK", name: "Alex Kim", detail: `${profileArea} · joined May 2026`, stats: [["12", "tasks completed"], ["4.9", "from 8 reviews"], ["7.5h", "volunteer time"]], reliability: "96%" };
   const isLiveAccount = Boolean(auth.session && auth.profile);
+  const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
   const organizationStatus = auth.organization?.verification_status ?? "pending";
   const organizationStatusLabel = organizationStatus.charAt(0).toUpperCase() + organizationStatus.slice(1);
   const profile = isLiveAccount && auth.profile
     ? {
       initials: initialsFromName(auth.profile.display_name),
       name: auth.profile.display_name,
-      detail: `${profileArea} · ${auth.accountType === "nonprofit" ? "nonprofit account" : "neighbor account"}`,
+      detail: `${profileArea} · ${isLiveNonprofit ? "organization account" : "neighbor account"}`,
       stats: [
         [String(ownedTasks.length), "posted in preview"],
         [String(acceptedTaskIds.length), "accepted in preview"],
-        [auth.accountType === "nonprofit" ? organizationStatusLabel : "Ready", auth.accountType === "nonprofit" ? "organization review" : "neighbor profile"],
+        [isLiveNonprofit ? String(sponsorFunded ? 1 : 0) : "Ready", isLiveNonprofit ? "sponsored in preview" : "neighbor profile"],
       ] as Array<[string, string]>,
       reliability: null,
     }
@@ -3511,10 +3672,19 @@ function ProfileScreen() {
     <><MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded profile-page">
         <PageTitle title="Profile" />
-        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? auth.accountType === "nonprofit" ? "Nonprofit" : "Neighbor" : persona}</span></section>
+        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
-        <section className="settings-group"><h2>Account</h2>{isLiveAccount ? <><div className="settings-row settings-row-static"><span className="settings-icon blue"><EnvelopeSimple size={21} weight="fill" /></span><span><strong>Email</strong><small>{auth.session?.user.email ?? "Signed-in account"}</small></span><span className="settings-status">{auth.session?.user.email_confirmed_at ? "Confirmed" : "Active"}</span></div><div className="settings-row settings-row-static"><span className={`settings-icon ${auth.accountType === "nonprofit" ? "purple" : ""}`}>{auth.accountType === "nonprofit" ? <Buildings size={21} weight="fill" /> : <UserCircle size={21} weight="fill" />}</span><span><strong>{auth.accountType === "nonprofit" ? "Nonprofit account" : "Neighbor account"}</strong><small>{auth.accountType === "nonprofit" ? "Post and accept tasks; sponsorship is permission-gated" : "Post or accept nearby tasks"}</small></span></div>{auth.accountType === "nonprofit" ? <div className="settings-row settings-row-static"><span className="settings-icon purple"><SealCheck size={21} weight="fill" /></span><span><strong>{auth.organization?.name ?? "Organization profile"}</strong><small>{organizationStatus === "verified" ? auth.canSponsor ? "Verified · sponsorship enabled" : "Verified · sponsorship funding not enabled" : organizationStatus === "rejected" ? "Verification needs attention" : organizationStatus === "suspended" ? "Organization access suspended" : "Verification review pending"}</small></span><span className="settings-status">{organizationStatusLabel}</span></div> : null}</> : <div className="settings-row settings-row-static"><span className="settings-icon"><UserCircle size={21} weight="fill" /></span><span><strong>Local demo profile</strong><small>No Supabase account is active</small></span></div>}<button className="settings-row sign-out-row" disabled={auth.busy} onClick={() => void signOut()}><span className="settings-icon"><SignOut size={21} weight="bold" /></span><span><strong>{isLiveAccount ? "Sign out" : "Exit local demo"}</strong><small>{isLiveAccount ? "Return to Micro's welcome screen" : "Return to account setup"}</small></span><ArrowRight size={18} /></button>{accountActionError ? <p className="form-error account-action-error" role="alert">{accountActionError}</p> : null}</section>
+        <section className="settings-group">
+          <h2>Account</h2>
+          {isLiveAccount ? <>
+            <div className="settings-row settings-row-static"><span className="settings-icon blue"><EnvelopeSimple size={21} weight="fill" /></span><span><strong>Email</strong><small>{auth.session?.user.email ?? "Signed-in account"}</small></span><span className="settings-status">{auth.session?.user.email_confirmed_at ? "Confirmed" : "Active"}</span></div>
+            <div className="settings-row settings-row-static"><span className={`settings-icon ${isLiveNonprofit ? "purple" : ""}`}>{isLiveNonprofit ? <Buildings size={21} weight="fill" /> : <UserCircle size={21} weight="fill" />}</span><span><strong>{isLiveNonprofit ? "Organization account" : "Neighbor account"}</strong><small>{isLiveNonprofit ? "Regular tasks plus permission-gated sponsorship tools" : "Post or accept nearby tasks"}</small></span></div>
+            {isLiveNonprofit ? <button className="settings-row organization-settings-row" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}><span className="settings-icon purple"><SealCheck size={21} weight="fill" /></span><span><strong>{auth.organization?.name ?? "Organization workspace"}</strong><small>{organizationStatus === "verified" ? auth.canSponsor ? "Sponsorship requests and funding enabled" : auth.capabilities.can_receive_sponsorship_requests ? "Sponsorship requests enabled · funding locked" : "Verified · sponsorship access not enabled" : organizationStatus === "rejected" ? "Verification needs attention" : organizationStatus === "suspended" ? "Organization access suspended" : "Verification review pending"}</small></span><span className="settings-status">{organizationStatusLabel}</span><ArrowRight size={18} /></button> : null}
+          </> : <div className="settings-row settings-row-static"><span className="settings-icon"><UserCircle size={21} weight="fill" /></span><span><strong>Local demo profile</strong><small>No Supabase account is active</small></span></div>}
+          <button className="settings-row sign-out-row" disabled={auth.busy} onClick={() => void signOut()}><span className="settings-icon"><SignOut size={21} weight="bold" /></span><span><strong>{isLiveAccount ? "Sign out" : "Exit local demo"}</strong><small>{isLiveAccount ? "Return to Micro's welcome screen" : "Return to account setup"}</small></span><ArrowRight size={18} /></button>
+          {accountActionError ? <p className="form-error account-action-error" role="alert">{accountActionError}</p> : null}
+        </section>
         {!isLiveAccount ? <section className="settings-group"><h2>Participation fixtures</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section> : null}
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
         <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
