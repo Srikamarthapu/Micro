@@ -3500,7 +3500,7 @@ function ProfileScreen() {
   return (
     <><MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded profile-page">
-        <PageTitle eyebrow="Your neighborhood presence" title="Profile" subtitle="Control how you participate and what trust signals neighbors can see." />
+        <PageTitle title="Profile" />
         <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? auth.accountType === "nonprofit" ? "Nonprofit" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
@@ -3590,8 +3590,8 @@ function RouteHeader({ title, onBack, right }: { title: string; onBack: () => vo
   return <div className="route-header"><button className="icon-button" aria-label="Go back" onClick={onBack}><CaretLeft size={24} weight="bold" /></button><h1 ref={titleRef} tabIndex={-1}>{title}</h1><span className="header-action-slot">{right}</span></div>;
 }
 
-function PageTitle({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
-  return <header className="page-title"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{subtitle}</p></header>;
+function PageTitle({ eyebrow, title, subtitle }: { eyebrow?: string; title: string; subtitle?: string }) {
+  return <header className="page-title">{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h1>{title}</h1>{subtitle ? <p>{subtitle}</p> : null}</header>;
 }
 
 function StepRail({ current, total }: { current: number; total: number }) {
