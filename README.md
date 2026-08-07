@@ -10,6 +10,7 @@ Micro is a warm, trust-first mobile prototype for arranging small neighborhood t
 - Role-aware Activity journeys for start PINs, completion evidence, requester confirmation, simulated payout, cancellations, no-shows, support pauses, service hours, and structured reviews.
 - Protected task threads with immutable lifecycle records, local messaging, reporting, blocking, and review-only youth/guardian states.
 - Adult, youth, and guardian fixtures with task-specific approval, age/consent gates, persona-isolated records, and shared safety holds where roles overlap.
+- Live Supabase email authentication for regular neighbors and nonprofit representatives, protected account profiles, organization membership, verification state, password recovery, and database-derived sponsorship permissions.
 - Responsive iPhone and Pixel 10 frames using the protected mobile runtime.
 
 ## Current redesign direction
@@ -53,6 +54,28 @@ In Google Cloud Console: enable **Maps JavaScript API**, restrict the key to HTT
 
 Areas are a fixed enum — `Oakland & Alameda`, `Downtown & Lake Merritt`, `Temescal & Rockridge`, `Fruitvale & San Antonio`, `West Oakland & Jack London`, `Alameda Island`, and `Island of Montréal`. Each carries a centre, a default zoom, min/max zoom, and a pan fence, so the map cannot drift out of the chosen area. Distances are computed from the viewer's own area; there is no geocoding or autocomplete traffic.
 
+### Supabase accounts
+
+The app uses browser-safe Supabase configuration only:
+
+```bash
+# .env.local — never commit this file
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+```
+
+Apply the SQL files in `supabase/migrations/` in filename order. They create RLS-protected profiles, organizations, and memberships; capture the selected account type at signup; and expose sponsorship capabilities only for active owner/admin members of verified, sponsorship-enabled nonprofits. Never put a service-role key, database password, JWT secret, or connection string in a `VITE_*` variable.
+
+### Verify
+
+```bash
+npm run check:runtime
+npx tsc --noEmit
+npm run build
+npm run test:sites
+npm run test:runtime
+```
+
 ## Prototype boundary
 
-This baseline intentionally does not connect production authentication, identity or age verification, payments, maps, push notifications, messaging, moderation, storage, or task APIs. All visible data and receipts are local fixtures, and the UI labels those boundaries directly. Any selected profile photo is a browser-local preview with an explicit fallback; it is not uploaded, synced, moderated, or permanently stored. The state seams are ready for secure services later without pretending those services exist today.
+Supabase authentication, protected account profiles, account types, organization membership, and database-derived sponsorship permissions are live when the project variables are configured. Google Maps can provide the basemap when its browser key and Map ID are configured. Task records and markers, approximate task locations, youth/guardian personas, identity verification, payments, push notifications, messaging, moderation, storage, and task APIs remain local fixtures or deferred services. Any selected profile photo is a browser-local preview with an explicit fallback; it is not uploaded, synced, moderated, or permanently stored. The UI labels these boundaries directly.

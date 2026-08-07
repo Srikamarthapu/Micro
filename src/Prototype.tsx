@@ -1,6 +1,8 @@
 import {
+  ArrowLeft,
   ArrowRight,
   Bell,
+  Buildings,
   Camera,
   CalendarBlank,
   CaretDown,
@@ -12,11 +14,13 @@ import {
   CheckCircle,
   Clock,
   CurrencyDollar,
+  EnvelopeSimple,
   HandHeart,
   House,
   Info,
   Leaf,
   ListChecks,
+  LockKey,
   MagnifyingGlass,
   MapPin,
   Minus,
@@ -26,6 +30,7 @@ import {
   SealCheck,
   Scissors,
   ShieldCheck,
+  SignOut,
   SlidersHorizontal,
   Sparkle,
   Star,
@@ -41,7 +46,8 @@ import "@fontsource-variable/atkinson-hyperlegible-next";
 import "@fontsource-variable/fraunces";
 import { AdvancedMarker, AdvancedMarkerAnchorPoint, APILoadingStatus, APIProvider, Map as GoogleMap, useApiLoadingStatus, useMap } from "@vis.gl/react-google-maps";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import type { Session } from "@supabase/supabase-js";
 import {
   BottomSheet,
   Carousel,
@@ -64,6 +70,56 @@ import {
   templateById,
   type TaskTemplate,
 } from "./taskCatalog";
+import { supabase, supabaseConfig } from "./supabase";
+
+type AccountType = "regular" | "nonprofit";
+type OrganizationVerificationStatus = "pending" | "verified" | "rejected" | "suspended";
+
+type AuthProfile = {
+  id: string;
+  display_name: string;
+  service_area: string | null;
+  account_type: AccountType;
+};
+
+type AuthOrganization = {
+  id: string;
+  name: string;
+  verification_status: OrganizationVerificationStatus;
+  sponsorship_enabled: boolean;
+  role: "owner" | "admin" | "member";
+};
+
+type AuthCapabilities = {
+  can_post_tasks: boolean;
+  can_accept_tasks: boolean;
+  can_receive_sponsorship_requests: boolean;
+  can_sponsor_tasks: boolean;
+};
+
+type SignUpInput = {
+  accountType: AccountType;
+  fullName: string;
+  email: string;
+  password: string;
+  approximateArea: AreaId;
+  standardsAccepted: boolean;
+  organizationName?: string;
+  organizationWebsite?: string;
+};
+
+type AuthActionResult = {
+  ok: boolean;
+  message?: string;
+  confirmationRequired?: boolean;
+};
+
+const emptyCapabilities = (): AuthCapabilities => ({
+  can_post_tasks: false,
+  can_accept_tasks: false,
+  can_receive_sponsorship_requests: false,
+  can_sponsor_tasks: false,
+});
 
 type TabId = "nearby" | "post" | "activity" | "messages" | "profile";
 type TaskMode = "paid" | "community" | "sponsored";
@@ -96,8 +152,8 @@ type LatLng = { lat: number; lng: number };
 type AreaId = "all" | "downtown" | "temescal" | "fruitvale" | "westoak" | "alameda" | "montreal";
 type MicroArea = { id: AreaId; label: string; blurb: string; center: LatLng; zoom: number; minZoom: number; maxZoom: number; spanMi: number };
 
-// Bounded area enum. The user never picks an arbitrary point, so the number of
-// distinct Static Maps requests is capped at one per area and every one caches.
+// Bounded area enum. The user never picks an arbitrary point, so discovery and
+// map framing stay inside the launch regions without geocoding free-form text.
 const areas: MicroArea[] = [
   { id: "all", label: "Oakland & Alameda", blurb: "All demo neighborhoods", center: { lat: 37.8045, lng: -122.262 }, zoom: 12, minZoom: 11, maxZoom: 17, spanMi: 9 },
   { id: "downtown", label: "Downtown & Lake Merritt", blurb: "Neighborhood results", center: { lat: 37.8044, lng: -122.2712 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
@@ -123,6 +179,12 @@ function areaBounds(area: MicroArea) {
 
 function areaById(id: AreaId): MicroArea {
   return areas.find((area) => area.id === id) ?? areas[0];
+}
+
+function areaIdFromServiceArea(value?: string | null): AreaId {
+  if (!value) return "all";
+  const normalized = value.trim().toLowerCase();
+  return areas.find((area) => area.id === normalized || area.label.toLowerCase() === normalized)?.id ?? "all";
 }
 
 function distanceMiles(from: LatLng, to: LatLng) {
@@ -510,6 +572,419 @@ type MicroContextValue = {
   setProfilePhotos: Dispatch<SetStateAction<Record<Persona, string>>>;
 };
 
+type AuthContextValue = {
+  configured: boolean;
+  initialized: boolean;
+  busy: boolean;
+  accountLoading: boolean;
+  accountError: string | null;
+  session: Session | null;
+  profile: AuthProfile | null;
+  organization: AuthOrganization | null;
+  accountType: AccountType;
+  capabilities: AuthCapabilities;
+  recoveryMode: boolean;
+  demoMode: boolean;
+  canSponsor: boolean;
+  signIn: (email: string, password: string) => Promise<AuthActionResult>;
+  signUp: (input: SignUpInput) => Promise<AuthActionResult>;
+  resendConfirmation: (email: string) => Promise<AuthActionResult>;
+  requestPasswordReset: (email: string) => Promise<AuthActionResult>;
+  updatePassword: (password: string) => Promise<AuthActionResult>;
+  createOrganization: (name: string, website?: string) => Promise<AuthActionResult>;
+  signOut: () => Promise<AuthActionResult>;
+  reloadProfile: () => Promise<void>;
+  enterDemo: () => void;
+  exitDemo: () => void;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+function useAuth() {
+  const value = useContext(AuthContext);
+  if (!value) throw new Error("useAuth must be used inside AuthProvider");
+  return value;
+}
+
+function friendlyAuthError(error: unknown, fallback: string) {
+  const message = error && typeof error === "object" && "message" in error
+    ? String((error as { message?: unknown }).message ?? "").toLowerCase()
+    : "";
+
+  if (message.includes("invalid login credentials")) return "We couldn't sign you in. Check your email and password.";
+  if (message.includes("email not confirmed")) return "Confirm your email before signing in.";
+  if (message.includes("already registered") || message.includes("user already exists")) return "An account may already use that email. Try signing in or resetting the password.";
+  if (message.includes("weak password") || message.includes("password should")) return "Use at least 8 characters and avoid a commonly used password.";
+  if (message.includes("rate limit") || message.includes("too many requests")) return "Too many attempts. Wait a moment, then try again.";
+  if (message.includes("failed to fetch") || message.includes("network")) return "Micro couldn't reach Supabase. Check your connection and try again.";
+  return fallback;
+}
+
+function initialsFromName(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "M";
+  return words.slice(0, 2).map((word) => word[0]?.toUpperCase() ?? "").join("") || "M";
+}
+
+function AuthProvider({ children }: { children: ReactNode }) {
+  const [initialized, setInitialized] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [organization, setOrganization] = useState<AuthOrganization | null>(null);
+  const [capabilities, setCapabilities] = useState<AuthCapabilities>(emptyCapabilities);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
+  const hydrationRequestRef = useRef(0);
+  const authEventSequenceRef = useRef(0);
+  const activeUserIdRef = useRef<string | null>(null);
+
+  const hydrateAccount = useCallback(async (nextSession: Session | null) => {
+    const requestId = ++hydrationRequestRef.current;
+    const isCurrentRequest = () => hydrationRequestRef.current === requestId;
+
+    if (!supabase || !nextSession) {
+      setProfile(null);
+      setOrganization(null);
+      setCapabilities(emptyCapabilities());
+      setAccountError(null);
+      setAccountLoading(false);
+      return;
+    }
+
+    setAccountLoading(true);
+    setAccountError(null);
+    setProfile(null);
+    setOrganization(null);
+    setCapabilities(emptyCapabilities());
+
+    try {
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, display_name, service_area, account_type")
+        .eq("id", nextSession.user.id)
+        .maybeSingle();
+
+      if (!isCurrentRequest()) return;
+      if (profileError || !profileData) {
+        setAccountError(
+          profileError
+            ? "Your account is signed in, but Micro couldn't load its protected profile. The database setup may still need to be applied."
+            : "Your account is signed in, but its Micro profile is not ready yet.",
+        );
+        return;
+      }
+
+      const nextProfile = profileData as AuthProfile;
+      setProfile(nextProfile);
+
+      const { data: membershipData, error: membershipError } = await supabase
+        .from("organization_members")
+        .select("member_role, organization:organizations(id, name, verification_status, sponsorship_enabled)")
+        .eq("user_id", nextSession.user.id)
+        .eq("membership_status", "active")
+        .maybeSingle();
+
+      if (!isCurrentRequest()) return;
+      if (membershipError) {
+        setAccountError("Your account loaded, but its organization membership could not be verified.");
+        return;
+      }
+
+      const membership = membershipData as {
+        member_role?: AuthOrganization["role"];
+        organization?: Omit<AuthOrganization, "role"> | Array<Omit<AuthOrganization, "role">> | null;
+      } | null;
+      const related = Array.isArray(membership?.organization)
+        ? membership?.organization[0]
+        : membership?.organization;
+
+      setOrganization(
+        related && membership?.member_role
+          ? { ...related, role: membership.member_role }
+          : null,
+      );
+
+      const { data: capabilityData, error: capabilityError } = await supabase
+        .rpc("current_user_capabilities")
+        .maybeSingle();
+
+      if (!isCurrentRequest()) return;
+      if (capabilityError || !capabilityData) {
+        setAccountError("Micro couldn't verify your task permissions. Try loading the account again.");
+        return;
+      }
+      setCapabilities(capabilityData as AuthCapabilities);
+    } catch (error) {
+      if (!isCurrentRequest()) return;
+      setProfile(null);
+      setOrganization(null);
+      setCapabilities(emptyCapabilities());
+      setAccountError(friendlyAuthError(error, "Micro couldn't load your protected account. Try again."));
+    } finally {
+      if (isCurrentRequest()) setAccountLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setInitialized(true);
+      return;
+    }
+
+    let active = true;
+
+    const initialSequence = authEventSequenceRef.current;
+    void supabase.auth.getSession()
+      .then(({ data, error }) => {
+        if (!active || authEventSequenceRef.current !== initialSequence) return;
+        if (error) {
+          setAccountError("Micro couldn't restore your previous session.");
+          return;
+        }
+        activeUserIdRef.current = data.session?.user.id ?? null;
+        setSession(data.session);
+        return hydrateAccount(data.session);
+      })
+      .catch(() => {
+        if (active && authEventSequenceRef.current === initialSequence) setAccountError("Micro couldn't restore your previous session.");
+      })
+      .finally(() => {
+        if (active && authEventSequenceRef.current === initialSequence) setInitialized(true);
+      });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!active) return;
+      authEventSequenceRef.current += 1;
+      const nextUserId = nextSession?.user.id ?? null;
+      const identityChanged = activeUserIdRef.current !== nextUserId;
+      activeUserIdRef.current = nextUserId;
+      setSession(nextSession);
+      setInitialized(true);
+      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+      if (event === "SIGNED_OUT") {
+        setRecoveryMode(false);
+        setDemoMode(false);
+      }
+      if (identityChanged) {
+        hydrationRequestRef.current += 1;
+        setProfile(null);
+        setOrganization(null);
+        setCapabilities(emptyCapabilities());
+        setAccountError(null);
+        setAccountLoading(Boolean(nextSession));
+        window.setTimeout(() => {
+          if (active) void hydrateAccount(nextSession);
+        }, 0);
+      }
+    });
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, [hydrateAccount]);
+
+  const requireClient = () => {
+    if (supabase) return null;
+    return {
+      ok: false,
+      message: "Micro is waiting for the project's publishable key. No secret key is required.",
+    } satisfies AuthActionResult;
+  };
+
+  const runBusyAction = async (
+    work: () => Promise<AuthActionResult>,
+    fallback: string,
+  ): Promise<AuthActionResult> => {
+    setBusy(true);
+    try {
+      return await work();
+    } catch (error) {
+      return { ok: false, message: friendlyAuthError(error, fallback) };
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const signIn = async (email: string, password: string): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { error } = await supabase!.auth.signInWithPassword({ email: email.trim(), password });
+      return error
+        ? { ok: false, message: friendlyAuthError(error, "We couldn't sign you in. Try again.") }
+        : { ok: true };
+    }, "We couldn't sign you in. Try again.");
+  };
+
+  const signUp = async (input: SignUpInput): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { data, error } = await supabase!.auth.signUp({
+        email: input.email.trim(),
+        password: input.password,
+        options: {
+          emailRedirectTo: window.location.origin,
+          data: {
+            display_name: input.fullName.trim(),
+            account_type: input.accountType,
+            service_area: input.approximateArea,
+            standards_accepted: input.standardsAccepted,
+            organization_name: input.organizationName?.trim() || null,
+            organization_website: input.organizationWebsite?.trim() || null,
+          },
+        },
+      });
+      if (error) return { ok: false, message: friendlyAuthError(error, "We couldn't create the account. Try again.") };
+      return { ok: true, confirmationRequired: !data.session };
+    }, "We couldn't create the account. Try again.");
+  };
+
+  const resendConfirmation = async (email: string): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { error } = await supabase!.auth.resend({
+        type: "signup",
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      return error
+        ? { ok: false, message: friendlyAuthError(error, "We couldn't resend the confirmation email.") }
+        : { ok: true, message: "A new confirmation email is on its way." };
+    }, "We couldn't resend the confirmation email.");
+  };
+
+  const requestPasswordReset = async (email: string): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { error } = await supabase!.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin,
+      });
+      return error
+        ? { ok: false, message: friendlyAuthError(error, "We couldn't send the reset email. Try again.") }
+        : { ok: true, message: "If that email belongs to an account, a reset link is on its way." };
+    }, "We couldn't send the reset email. Try again.");
+  };
+
+  const updatePassword = async (password: string): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { error } = await supabase!.auth.updateUser({ password });
+      if (error) return { ok: false, message: friendlyAuthError(error, "We couldn't update the password.") };
+      setRecoveryMode(false);
+      return { ok: true, message: "Your password has been updated." };
+    }, "We couldn't update the password.");
+  };
+
+  const createOrganization = async (name: string, website?: string): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    if (!session) return { ok: false, message: "Sign in again before creating the organization profile." };
+    const slugBase = name
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "micro-nonprofit";
+    const slug = `${slugBase}-${session.user.id.slice(0, 6)}`;
+    return runBusyAction(async () => {
+      const { error } = await supabase!
+        .from("organizations")
+        .insert({
+          name: name.trim(),
+          slug,
+          website_url: website?.trim() || null,
+        });
+      if (error) return { ok: false, message: "Micro couldn't create the organization profile. Check the name and try again." };
+      await hydrateAccount(session);
+      return { ok: true };
+    }, "Micro couldn't create the organization profile. Check the name and try again.");
+  };
+
+  const signOut = async (): Promise<AuthActionResult> => {
+    if (demoMode) {
+      setDemoMode(false);
+      return { ok: true };
+    }
+    const missing = requireClient();
+    if (missing) return missing;
+    return runBusyAction(async () => {
+      const { error } = await supabase!.auth.signOut();
+      if (error) return { ok: false, message: "Micro couldn't sign you out. Try again." };
+      setProfile(null);
+      setOrganization(null);
+      setCapabilities(emptyCapabilities());
+      return { ok: true };
+    }, "Micro couldn't sign you out. Try again.");
+  };
+
+  const reloadProfile = useCallback(async () => {
+    if (session) {
+      await hydrateAccount(session);
+      return;
+    }
+    if (!supabase) {
+      setAccountError("Micro is waiting for the project's publishable key.");
+      return;
+    }
+
+    const authSequence = authEventSequenceRef.current;
+    setAccountLoading(true);
+    setAccountError(null);
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (authEventSequenceRef.current !== authSequence) return;
+      if (error) {
+        setAccountError("Micro couldn't restore your previous session.");
+        return;
+      }
+      activeUserIdRef.current = data.session?.user.id ?? null;
+      setSession(data.session);
+      setInitialized(true);
+      if (data.session) await hydrateAccount(data.session);
+    } catch {
+      if (authEventSequenceRef.current === authSequence) setAccountError("Micro couldn't restore your previous session.");
+    } finally {
+      if (authEventSequenceRef.current === authSequence) setAccountLoading(false);
+    }
+  }, [hydrateAccount, session]);
+
+  const value = useMemo<AuthContextValue>(() => ({
+    configured: supabaseConfig.configured,
+    initialized,
+    busy,
+    accountLoading,
+    accountError,
+    session,
+    profile,
+    organization,
+    accountType: (organization || profile?.account_type === "nonprofit") ? "nonprofit" : "regular",
+    capabilities,
+    recoveryMode,
+    demoMode,
+    canSponsor: capabilities.can_sponsor_tasks,
+    signIn,
+    signUp,
+    resendConfirmation,
+    requestPasswordReset,
+    updatePassword,
+    createOrganization,
+    signOut,
+    reloadProfile,
+    enterDemo: () => setDemoMode(true),
+    exitDemo: () => setDemoMode(false),
+  }), [accountError, accountLoading, busy, capabilities, demoMode, initialized, organization, profile, recoveryMode, reloadProfile, session]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
 const MicroContext = createContext<MicroContextValue | null>(null);
 
 function useMicro() {
@@ -519,6 +994,7 @@ function useMicro() {
 }
 
 function MicroProvider({ children }: { children: ReactNode }) {
+  const auth = useAuth();
   const [activeTab, setActiveTab] = useState<TabId>("nearby");
   const [selectedTaskId, setSelectedTaskId] = useState("leaves");
   const [paidStage, setPaidStage] = useState<PaidStage>("Payment secured");
@@ -557,7 +1033,7 @@ function MicroProvider({ children }: { children: ReactNode }) {
   const [completionSubmissions, setCompletionSubmissions] = useState<Record<string, CompletionSubmission>>({});
   const [taskReviews, setTaskReviews] = useState<Record<string, TaskReviewState>>({});
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [profileAreaId, setProfileAreaId] = useState<AreaId>("all");
+  const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
   const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
   const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
     adult: {
@@ -694,10 +1170,535 @@ const rootScreen: FlowScreen = {
 };
 
 export default function Prototype() {
+  return <AuthProvider><AuthBoundary /></AuthProvider>;
+}
+
+function AuthBoundary() {
+  const auth = useAuth();
+
+  if (!auth.initialized || (auth.session && auth.accountLoading)) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (auth.recoveryMode) {
+    return <FlowStack initial={makeUpdatePasswordScreen()} />;
+  }
+
+  if (auth.accountError) {
+    return <AuthAccountErrorScreen />;
+  }
+
+  if (auth.session && auth.profile) {
+    if (auth.accountType === "nonprofit" && !auth.organization) {
+      return <FlowStack initial={makeNonprofitSetupScreen()} />;
+    }
+
+    return (
+      <MicroProvider key={auth.session.user.id}>
+        <FlowStack initial={rootScreen} />
+      </MicroProvider>
+    );
+  }
+
+  if (auth.demoMode) {
+    return (
+      <MicroProvider key="local-demo">
+        <FlowStack initial={rootScreen} />
+      </MicroProvider>
+    );
+  }
+
+  return <FlowStack initial={authWelcomeScreen} />;
+}
+
+const authWelcomeScreen: FlowScreen = {
+  id: "auth-welcome",
+  render: () => <AuthWelcomeScreen />,
+};
+
+function authRoute(title: string, id: string, render: () => ReactNode): FlowScreen {
+  return {
+    id,
+    headerHeight: 66,
+    header: (flow) => <RouteHeader title={title} onBack={flow.pop} />,
+    render,
+  };
+}
+
+function makeLoginScreen(): FlowScreen {
+  return authRoute("Sign in", "auth-login", () => <LoginScreen />);
+}
+
+function makeAccountTypeScreen(): FlowScreen {
+  return authRoute("Create account", "auth-account-type", () => <AccountTypeScreen />);
+}
+
+function makeSignUpScreen(accountType: AccountType): FlowScreen {
+  return authRoute(
+    accountType === "nonprofit" ? "Nonprofit account" : "Neighbor account",
+    `auth-signup-${accountType}`,
+    () => <SignUpScreen accountType={accountType} />,
+  );
+}
+
+function makeCheckEmailScreen(email: string): FlowScreen {
+  return authRoute("Check your email", "auth-check-email", () => <CheckEmailScreen email={email} />);
+}
+
+function makeForgotPasswordScreen(): FlowScreen {
+  return authRoute("Reset password", "auth-forgot-password", () => <ForgotPasswordScreen />);
+}
+
+function makeResetSentScreen(email: string): FlowScreen {
+  return authRoute("Check your email", "auth-reset-sent", () => <ResetSentScreen email={email} />);
+}
+
+function makeUpdatePasswordScreen(): FlowScreen {
+  return {
+    id: "auth-update-password",
+    render: () => <UpdatePasswordScreen />,
+  };
+}
+
+function makeNonprofitSetupScreen(): FlowScreen {
+  return {
+    id: "auth-nonprofit-setup",
+    render: () => <NonprofitSetupScreen />,
+  };
+}
+
+function AuthLoadingScreen() {
   return (
-    <MicroProvider>
-      <FlowStack initial={rootScreen} />
-    </MicroProvider>
+    <main className="auth-experience auth-loading" aria-busy="true" aria-label="Loading Micro account">
+      <div className="auth-brand-mark" aria-hidden="true"><span>M</span></div>
+      <div className="auth-loading-dot" aria-hidden="true" />
+      <p>Opening your neighborhood…</p>
+    </main>
+  );
+}
+
+function AuthAccountErrorScreen() {
+  const auth = useAuth();
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-state-screen">
+        <div className="auth-brand-lockup"><span className="auth-wordmark">Micro</span><span>helping nearby</span></div>
+        <section className="auth-state-card" role="alert">
+          <span className="auth-state-icon warning"><Warning size={30} weight="duotone" /></span>
+          <p className="eyebrow">Account setup</p>
+          <h1>We need one more connection.</h1>
+          <p>{auth.accountError}</p>
+          <button className="primary-button" disabled={auth.accountLoading} onClick={() => void auth.reloadProfile()}>{auth.accountLoading ? "Checking…" : "Try again"}</button>
+          <button className="text-button" onClick={() => void auth.signOut()}>Sign out</button>
+        </section>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function AuthWelcomeScreen() {
+  const flow = useFlow();
+  const auth = useAuth();
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-welcome" data-testid="auth-welcome">
+        <header className="auth-brand-lockup"><span className="auth-wordmark">Micro</span><span>helping nearby</span></header>
+        <section className="auth-welcome-copy">
+          <span className="auth-kicker"><MapPin size={16} weight="fill" /> Your neighborhood, within reach</span>
+          <h1>Small tasks.<br />Real neighbors.</h1>
+          <p>Post clearly scoped help, lend a hand nearby, or coordinate sponsored support through a verified nonprofit.</p>
+        </section>
+        <div className="auth-trust-strip" aria-label="Micro participation principles">
+          <span><ShieldCheck size={18} weight="fill" /> Clear scope</span>
+          <span><CurrencyDollar size={18} weight="fill" /> Fair pay</span>
+          <span><HandHeart size={18} weight="fill" /> Community care</span>
+        </div>
+        {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
+        <div className="auth-welcome-actions">
+          <button className="primary-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account <ArrowRight size={19} /></button>
+          <button className="secondary-button" onClick={() => flow.push(makeLoginScreen())}>I already have an account</button>
+          {!auth.configured ? <button className="text-button auth-demo-link" onClick={auth.enterDemo}>Continue with the local demo</button> : null}
+        </div>
+        <p className="auth-legal-note">Approximate locations stay public; exact addresses remain protected until a confirmed match.</p>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function AuthConnectionNote() {
+  return (
+    <div className="auth-connection-note" role="status">
+      <Info size={19} weight="fill" />
+      <span><strong>Supabase project selected</strong> The publishable key still needs to be connected before real accounts can be created.</span>
+    </div>
+  );
+}
+
+function AuthLiveBoundary() {
+  return (
+    <div className="auth-connection-note live" role="note">
+      <ShieldCheck size={19} weight="fill" />
+      <span><strong>Account access is live</strong> Sign-in and nonprofit permissions use Supabase, and Google can render the basemap. Task markers, locations, messages, payments, and notifications are still preview data.</span>
+    </div>
+  );
+}
+
+function isKeyboardTextEntry(target: EventTarget | null): target is HTMLInputElement | HTMLTextAreaElement {
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (!(target instanceof HTMLInputElement)) return false;
+  return !["button", "checkbox", "file", "radio", "range", "reset", "submit"].includes(target.type);
+}
+
+function AuthInputField({
+  id,
+  label,
+  icon: FieldIcon,
+  value,
+  onChange,
+  type = "text",
+  autoComplete,
+  placeholder,
+  help,
+  errorId,
+  invalid = false,
+}: {
+  id: string;
+  label: string;
+  icon: Icon;
+  value: string;
+  onChange: (value: string) => void;
+  type?: "text" | "email" | "url" | "password";
+  autoComplete?: string;
+  placeholder?: string;
+  help?: string;
+  errorId?: string;
+  invalid?: boolean;
+}) {
+  const keyboard = useKeyboard();
+  const helpId = help ? `${id}-help` : undefined;
+  const describedBy = [helpId, errorId].filter(Boolean).join(" ") || undefined;
+  return (
+    <label className="auth-field" htmlFor={id}>
+      <span>{label}</span>
+      <span className="auth-input-shell" data-invalid={invalid ? "true" : "false"}>
+        <FieldIcon size={20} aria-hidden="true" />
+        <KeyboardInput
+          id={id}
+          type={type}
+          value={value}
+          autoComplete={autoComplete}
+          inputMode={type === "email" ? "email" : type === "url" ? "url" : "text"}
+          placeholder={placeholder}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={(event) => {
+            if (isKeyboardTextEntry(event.relatedTarget)) return;
+            window.setTimeout(() => {
+              if (!isKeyboardTextEntry(document.activeElement)) keyboard.hide();
+            }, 0);
+          }}
+        />
+      </span>
+      {help ? <small id={helpId}>{help}</small> : null}
+    </label>
+  );
+}
+
+function AuthFormHeading({ eyebrow, title, copy }: { eyebrow: string; title: string; copy: string }) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { headingRef.current?.focus(); }, []);
+  return (
+    <header className="auth-form-heading">
+      <p className="eyebrow">{eyebrow}</p>
+      <h1 ref={headingRef} tabIndex={-1}>{title}</h1>
+      <p>{copy}</p>
+    </header>
+  );
+}
+
+function LoginScreen() {
+  const flow = useFlow();
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const emailValid = /^\S+@\S+\.\S+$/.test(email.trim());
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (!emailValid || !password) {
+      setError("Enter a valid email and your password.");
+      return;
+    }
+    setError("");
+    const result = await auth.signIn(email, password);
+    if (!result.ok) setError(result.message ?? "We couldn't sign you in.");
+  };
+
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page">
+        <AuthFormHeading eyebrow="Welcome back" title="Sign in to Micro." copy="Your account and nonprofit permissions stay protected with Supabase. Task and message content is still local preview data." />
+        {!auth.configured ? <AuthConnectionNote /> : null}
+        <form className="auth-form" onSubmit={submit} noValidate>
+          <AuthInputField id="login-email" label="Email" icon={EnvelopeSimple} type="email" value={email} onChange={setEmail} autoComplete="email" placeholder="you@example.org" errorId={error ? "login-error" : undefined} invalid={Boolean(error) && !emailValid} />
+          <AuthInputField id="login-password" label="Password" icon={LockKey} type="password" value={password} onChange={setPassword} autoComplete="current-password" placeholder="Your password" errorId={error ? "login-error" : undefined} invalid={Boolean(error) && !password} />
+          <button type="button" className="text-button auth-forgot-link" onClick={() => { keyboard.hide(); flow.push(makeForgotPasswordScreen()); }}>Forgot password?</button>
+          {error ? <p id="login-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
+          <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Signing in…" : "Sign in"}</button>
+        </form>
+        <div className="auth-switch-row"><span>New to Micro?</span><button className="text-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account</button></div>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function AccountTypeScreen() {
+  const flow = useFlow();
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page">
+        <AuthFormHeading eyebrow="Choose your account" title="How will you use Micro?" copy="Both account types can post and accept tasks. Verified nonprofits can also coordinate sponsorship." />
+        <section className="account-type-list" aria-label="Account type">
+          <button className="account-type-card" onClick={() => flow.push(makeSignUpScreen("regular"))}>
+            <span className="account-type-icon"><UserCircle size={29} weight="duotone" /></span>
+            <span><strong>Neighbor</strong><small>Post tasks, accept nearby help, and join Community Help.</small></span>
+            <ArrowRight size={20} />
+          </button>
+          <button className="account-type-card nonprofit" onClick={() => flow.push(makeSignUpScreen("nonprofit"))}>
+            <span className="account-type-icon"><Buildings size={29} weight="duotone" /></span>
+            <span><strong>Nonprofit organization</strong><small>Post and accept tasks now. Sponsorship tools unlock after verification.</small></span>
+            <ArrowRight size={20} />
+          </button>
+        </section>
+        <div className="auth-privacy-card"><ShieldCheck size={21} weight="fill" /><span><strong>Account type is not a shortcut around trust.</strong> Sponsor access depends on a verified organization record.</span></div>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function SignUpScreen({ accountType }: { accountType: AccountType }) {
+  const flow = useFlow();
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const [fullName, setFullName] = useState("");
+  const [organizationName, setOrganizationName] = useState("");
+  const [organizationWebsite, setOrganizationWebsite] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [area, setArea] = useState<AreaId>("all");
+  const [accepted, setAccepted] = useState(false);
+  const [error, setError] = useState("");
+  const emailValid = /^\S+@\S+\.\S+$/.test(email.trim());
+  const valid = fullName.trim().length >= 2
+    && emailValid
+    && password.length >= 8
+    && accepted
+    && (accountType === "regular" || organizationName.trim().length >= 2);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (!valid) {
+      setError(accountType === "nonprofit" && organizationName.trim().length < 2
+        ? "Add the organization name, a valid email, an 8-character password, and accept the standards."
+        : "Add your name, a valid email, an 8-character password, and accept the standards.");
+      return;
+    }
+    setError("");
+    const result = await auth.signUp({
+      accountType,
+      fullName,
+      email,
+      password,
+      approximateArea: area,
+      standardsAccepted: accepted,
+      organizationName,
+      organizationWebsite,
+    });
+    if (!result.ok) {
+      setError(result.message ?? "We couldn't create the account.");
+      return;
+    }
+    if (result.confirmationRequired) flow.replace(makeCheckEmailScreen(email.trim()));
+  };
+
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page auth-signup-page">
+        <AuthFormHeading
+          eyebrow={accountType === "nonprofit" ? "Organization representative" : "Neighbor account"}
+          title={accountType === "nonprofit" ? "Introduce your nonprofit." : "A few details, then you're in."}
+          copy={accountType === "nonprofit" ? "This creates a pending organization profile. Sponsorship stays locked until verification." : "Micro uses your approximate area for discovery and keeps exact addresses protected."}
+        />
+        {!auth.configured ? <AuthConnectionNote /> : null}
+        <form className="auth-form" onSubmit={submit} noValidate>
+          {accountType === "nonprofit" ? <AuthInputField id="signup-organization" label="Organization name" icon={Buildings} value={organizationName} onChange={setOrganizationName} autoComplete="organization" placeholder="Neighborhood Food Network" errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && organizationName.trim().length < 2} /> : null}
+          <AuthInputField id="signup-name" label={accountType === "nonprofit" ? "Representative name" : "Full name"} icon={UserCircle} value={fullName} onChange={setFullName} autoComplete="name" placeholder="Your name" errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && fullName.trim().length < 2} />
+          {accountType === "nonprofit" ? <AuthInputField id="signup-website" label="Organization website (optional)" icon={Buildings} type="url" value={organizationWebsite} onChange={setOrganizationWebsite} autoComplete="url" placeholder="https://example.org" help="You can add verification documents later; do not enter sensitive records here." errorId={error ? "signup-error" : undefined} /> : null}
+          <AuthInputField id="signup-email" label={accountType === "nonprofit" ? "Work email" : "Email"} icon={EnvelopeSimple} type="email" value={email} onChange={setEmail} autoComplete="email" placeholder="you@example.org" errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && !emailValid} />
+          <AuthInputField id="signup-password" label="Password" icon={LockKey} type="password" value={password} onChange={setPassword} autoComplete="new-password" placeholder="At least 8 characters" help="Use a unique password you don't reuse elsewhere." errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && password.length < 8} />
+          <fieldset className="auth-area-choice"><legend>Approximate area</legend><div>{areas.map((option) => <button type="button" key={option.id} aria-pressed={area === option.id} data-selected={area === option.id ? "true" : "false"} onClick={() => { keyboard.hide(); setArea(option.id); }}>{option.label}</button>)}</div></fieldset>
+          <button type="button" className="auth-standards-choice" aria-pressed={accepted} data-selected={accepted ? "true" : "false"} onClick={() => { keyboard.hide(); setAccepted((current) => !current); }}>
+            <span className="checkbox">{accepted ? <Check size={14} weight="bold" /> : null}</span>
+            <span><strong>I agree to Micro's participation standards</strong><small>Clear scope, respectful communication, no off-platform payment, and no prohibited high-risk work.</small></span>
+          </button>
+          {error ? <p id="signup-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
+          <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Creating account…" : "Create account"}</button>
+        </form>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function CheckEmailScreen({ email }: { email: string }) {
+  const flow = useFlow();
+  const auth = useAuth();
+  const [cooldown, setCooldown] = useState(30);
+  const [message, setMessage] = useState("");
+  const [messageIsError, setMessageIsError] = useState(false);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setTimeout(() => setCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [cooldown]);
+  const resend = async () => {
+    const result = await auth.resendConfirmation(email);
+    setMessage(result.message ?? "");
+    setMessageIsError(!result.ok);
+    if (result.ok) setCooldown(30);
+  };
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-state-screen">
+        <section className="auth-state-card">
+          <span className="auth-state-icon"><EnvelopeSimple size={31} weight="duotone" /></span>
+          <p className="eyebrow">One secure step</p>
+          <h1>Confirm your email.</h1>
+          <p>We sent a confirmation link to <strong>{email}</strong>. Open it on this device to finish signing in.</p>
+          {message ? <p className={messageIsError ? "auth-form-error" : "auth-inline-status"} role={messageIsError ? "alert" : "status"}>{messageIsError ? <Warning size={17} weight="fill" /> : null}{message}</p> : null}
+          <button className="secondary-button" disabled={auth.busy || cooldown > 0} onClick={() => void resend()}>{cooldown > 0 ? `Resend in ${cooldown}s` : "Resend confirmation"}</button>
+          <button className="text-button" onClick={() => flow.replace(makeLoginScreen())}>Back to sign in</button>
+        </section>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function ForgotPasswordScreen() {
+  const flow = useFlow();
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
+      setError("Enter the email used for your Micro account.");
+      return;
+    }
+    const result = await auth.requestPasswordReset(email);
+    if (!result.ok) setError(result.message ?? "We couldn't send the reset email.");
+    else flow.replace(makeResetSentScreen(email.trim()));
+  };
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page">
+        <AuthFormHeading eyebrow="Account recovery" title="Reset your password." copy="Enter your email and we'll send a secure reset link if an account exists." />
+        <form className="auth-form" onSubmit={submit} noValidate>
+          <AuthInputField id="reset-email" label="Email" icon={EnvelopeSimple} type="email" value={email} onChange={setEmail} autoComplete="email" placeholder="you@example.org" errorId={error ? "reset-email-error" : undefined} invalid={Boolean(error)} />
+          {error ? <p id="reset-email-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
+          <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Sending…" : "Send reset link"}</button>
+        </form>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function ResetSentScreen({ email }: { email: string }) {
+  const flow = useFlow();
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-state-screen">
+        <section className="auth-state-card">
+          <span className="auth-state-icon"><CheckCircle size={31} weight="duotone" /></span>
+          <p className="eyebrow">Email sent</p>
+          <h1>Check your inbox.</h1>
+          <p>If <strong>{email}</strong> belongs to a Micro account, its reset link is on the way.</p>
+          <button className="primary-button" onClick={() => flow.replace(makeLoginScreen())}>Return to sign in</button>
+        </section>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function UpdatePasswordScreen() {
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (password.length < 8 || password !== confirmation) {
+      setError(password !== confirmation ? "The passwords do not match." : "Use at least 8 characters.");
+      return;
+    }
+    const result = await auth.updatePassword(password);
+    if (!result.ok) setError(result.message ?? "We couldn't update the password.");
+  };
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page auth-standalone-route">
+        <button className="auth-standalone-back" aria-label="Sign out" onClick={() => void auth.signOut()}><ArrowLeft size={22} /></button>
+        <AuthFormHeading eyebrow="Secure recovery" title="Choose a new password." copy="Use a unique password you don't use for another account." />
+        <form className="auth-form" onSubmit={submit} noValidate>
+          <AuthInputField id="new-password" label="New password" icon={LockKey} type="password" value={password} onChange={setPassword} autoComplete="new-password" placeholder="At least 8 characters" errorId={error ? "new-password-error" : undefined} invalid={Boolean(error) && password.length < 8} />
+          <AuthInputField id="confirm-password" label="Confirm password" icon={LockKey} type="password" value={confirmation} onChange={setConfirmation} autoComplete="new-password" placeholder="Repeat your password" errorId={error ? "new-password-error" : undefined} invalid={Boolean(error) && password !== confirmation} />
+          {error ? <p id="new-password-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
+          <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Updating…" : "Update password"}</button>
+        </form>
+      </main>
+    </MobileScroll>
+  );
+}
+
+function NonprofitSetupScreen() {
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const metadata = auth.session?.user.user_metadata ?? {};
+  const [name, setName] = useState(typeof metadata.organization_name === "string" ? metadata.organization_name : "");
+  const [website, setWebsite] = useState(typeof metadata.organization_website === "string" ? metadata.organization_website : "");
+  const [error, setError] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (name.trim().length < 2) {
+      setError("Enter the nonprofit's full name.");
+      return;
+    }
+    const result = await auth.createOrganization(name, website);
+    if (!result.ok) setError(result.message ?? "We couldn't create the organization profile.");
+  };
+  return (
+    <MobileScroll className="auth-experience auth-scroll">
+      <main className="auth-route-page auth-standalone-route">
+        <AuthFormHeading eyebrow="Nonprofit setup" title="Create the organization profile." copy="You can post and accept tasks while verification is pending. Sponsorship tools remain protected." />
+        <div className="auth-privacy-card purple"><ShieldCheck size={21} weight="fill" /><span><strong>Verification is reviewed separately.</strong> Creating this profile does not grant sponsor access.</span></div>
+        <form className="auth-form" onSubmit={submit} noValidate>
+          <AuthInputField id="organization-name" label="Organization name" icon={Buildings} value={name} onChange={setName} autoComplete="organization" placeholder="Neighborhood Food Network" errorId={error ? "organization-error" : undefined} invalid={Boolean(error) && name.trim().length < 2} />
+          <AuthInputField id="organization-website" label="Website (optional)" icon={Buildings} type="url" value={website} onChange={setWebsite} autoComplete="url" placeholder="https://example.org" errorId={error ? "organization-error" : undefined} />
+          {error ? <p id="organization-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" /> {error}</p> : null}
+          <button className="primary-button" type="submit" disabled={auth.busy}>{auth.busy ? "Creating profile…" : "Create organization profile"}</button>
+          <button className="text-button" type="button" onClick={() => void auth.signOut()}>Sign out</button>
+        </form>
+      </main>
+    </MobileScroll>
   );
 }
 
@@ -838,7 +1839,7 @@ function NearbyScreen() {
       (!youthOnly || task.youthEligible) &&
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
-  const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0] ?? allTasks[0];
+  const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
   const activeFilterCount = Number(mode !== "all") + Number(category !== "all") + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
   const mapTasks = primaryVisibleTask
@@ -899,7 +1900,7 @@ function NearbyScreen() {
               <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={primaryVisibleTask?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
             ) : null}
             {!mapsApiKey || mapUnavailable ? <div className="map-placeholder" aria-hidden="true" /> : null}
-            <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Map needs an API key" : mapUnavailable || "Approximate locations"}</div>
+            <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Preview map needs an API key" : mapUnavailable || "Preview map · approximate locations"}</div>
           </section>
 
           <section className="tasks-sheet" aria-labelledby="nearby-heading">
@@ -922,7 +1923,7 @@ function NearbyScreen() {
               onPointerCancel={() => { dragStartY.current = null; sheetDragHandled.current = false; }}
             ><span className="sheet-grabber" aria-hidden="true" /></button>
             <div className="tasks-heading-row"><h1 id="nearby-heading">Nearby tasks</h1><span>{visibleTasks.length} nearby</span></div>
-            {visibleTasks.length ? (
+            {visibleTasks.length && primaryVisibleTask ? (
               <div className="task-list">
                 <TaskCard task={primaryVisibleTask} selected onOpen={openTask} />
                 {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} onOpen={openTask} />)}
@@ -1164,6 +2165,7 @@ function makeTaskScreen(task: Task): FlowScreen {
 }
 
 function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) {
+  const auth = useAuth();
   const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const [phase, setPhase] = useState<"detail" | "review" | "approval" | "accepted">("detail");
@@ -1177,9 +2179,10 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
   const isOwnedListing = task.ownerPersona === persona;
   const youthBlocked = persona === "youth" && (!task.youthEligible || youthAge < 15 || !guardianLinked || !accessTermsAccepted);
   const needsApproval = persona === "youth" && task.youthEligible && youthApprovedTaskId !== task.id;
+  const accountCanAccept = auth.demoMode || auth.capabilities.can_accept_tasks;
 
   const accept = () => {
-    if (isOwnedListing) return;
+    if (isOwnedListing || !accountCanAccept) return;
     if (needsApproval) {
       setYouthApprovalTaskId(task.id);
       setPhase("approval");
@@ -1292,8 +2295,8 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
         </div>
       </MobileScroll>
       <div className="route-actionbar">
-        {phase === "detail" ? isOwnedListing ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Manage listing in Activity <ArrowRight size={19} /></button> : <button className="primary-button" disabled={hasOtherCommitment || requesterBlocked || youthBlocked || !accessTermsAccepted || persona === "guardian" || listingReported} onClick={() => setPhase("review")}>{listingReported ? "Listing is in review" : persona === "guardian" ? "Guardian view cannot accept tasks" : hasOtherCommitment ? "Finish your active commitment first" : requesterBlocked ? "Blocked from this requester" : !accessTermsAccepted ? "Accept terms to participate" : persona === "youth" && youthAge < 15 ? "Youth Mode is for ages 15–17" : persona === "youth" && !guardianLinked ? "Link a guardian first" : youthBlocked ? "Unavailable in Youth Mode" : task.mode === "community" ? "Volunteer for this" : "I can help"}</button> : null}
-        {phase === "review" ? <button className="primary-button" disabled={hasOtherCommitment} onClick={accept}>{hasOtherCommitment ? "Another commitment is active" : needsApproval ? "Request guardian approval" : "Accept this task"}</button> : null}
+        {phase === "detail" ? isOwnedListing ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Manage listing in Activity <ArrowRight size={19} /></button> : <button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment || requesterBlocked || youthBlocked || !accessTermsAccepted || persona === "guardian" || listingReported} onClick={() => setPhase("review")}>{!accountCanAccept ? "Account cannot accept tasks" : listingReported ? "Listing is in review" : persona === "guardian" ? "Guardian view cannot accept tasks" : hasOtherCommitment ? "Finish your active commitment first" : requesterBlocked ? "Blocked from this requester" : !accessTermsAccepted ? "Accept terms to participate" : persona === "youth" && youthAge < 15 ? "Youth Mode is for ages 15–17" : persona === "youth" && !guardianLinked ? "Link a guardian first" : youthBlocked ? "Unavailable in Youth Mode" : task.mode === "community" ? "Volunteer for this" : "I can help"}</button> : null}
+        {phase === "review" ? <button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment} onClick={accept}>{!accountCanAccept ? "Account cannot accept tasks" : hasOtherCommitment ? "Another commitment is active" : needsApproval ? "Request guardian approval" : "Accept this task"}</button> : null}
         {phase === "approval" ? <button className="primary-button" onClick={() => { setActiveTab("profile"); onDone(); }}>Open Youth Mode <ArrowRight size={19} /></button> : null}
         {phase === "accepted" ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Go to Activity <ArrowRight size={19} /></button> : null}
       </div>
@@ -1303,8 +2306,9 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
 
 function PostScreen() {
   const keyboard = useKeyboard();
+  const auth = useAuth();
   const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileAreaId, profilePhotos, ownedTasks } = useMicro();
-  const listingArea = areaById(profileAreaId === "all" ? "downtown" : profileAreaId);
+  const listingArea = areaById(profileAreaId);
   const profileArea = listingArea.label;
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
@@ -1367,10 +2371,12 @@ function PostScreen() {
   const platformFee = mode === "community" ? 0 : Math.max(2, Math.round(numericAmount * 0.05));
   const processingFee = mode === "community" ? 0 : Math.max(1, Math.round(numericAmount * 0.03));
   const hourlyEquivalent = Math.round((numericAmount * 60) / listing.minutes);
-  const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
+  const accountCanPost = auth.demoMode || auth.capabilities.can_post_tasks;
+  const participationReady = accountCanPost && accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
+  const sponsoredPostingAllowed = auth.demoMode || auth.canSponsor;
   const draftChanged = JSON.stringify(postDraft) !== JSON.stringify(initialPostDraft);
   const scopeValid = riskConfirmed && (!photoPreview || photoAcknowledged);
-  const logisticsValid = startTimeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady;
+  const logisticsValid = startTimeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady && (mode !== "sponsored" || sponsoredPostingAllowed);
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
   const backToCatalog = () => { keyboard.hide(); setOpenCategoryId(template.categoryId); setStep(0); };
 
@@ -1412,8 +2418,8 @@ function PostScreen() {
       completion: listing.completion,
       privateAddress,
       photo: photoPreview || undefined,
-      requesterName: persona === "youth" ? "Sam K." : persona === "guardian" ? "Maya K." : "Alex K.",
-      requesterInitials: persona === "youth" ? "SK" : persona === "guardian" ? "MK" : "AK",
+      requesterName: auth.profile?.display_name || (persona === "youth" ? "Sam K." : persona === "guardian" ? "Maya K." : "Alex K."),
+      requesterInitials: auth.profile ? initialsFromName(auth.profile.display_name) : persona === "youth" ? "SK" : persona === "guardian" ? "MK" : "AK",
       requesterAvatar: profilePhotos[persona] || undefined,
       ownerPersona: persona,
       youthEligible: template.youthEligible,
@@ -1442,7 +2448,7 @@ function PostScreen() {
   };
 
   if (!participationReady) {
-    return <MobileScroll className="app-screen tab-scroll"><div className="standard-page nav-padded"><PageTitle eyebrow="Participation check" title="Posting is paused." subtitle="Micro keeps the draft safe while participation requirements are incomplete." /><div className="empty-state participation-gate"><ShieldCheck size={36} weight="duotone" /><h2>{persona === "youth" && youthAge < 15 ? "Youth Mode begins at age 15." : persona === "youth" && !guardianLinked ? "Link a guardian first." : "Accept the test terms first."}</h2><p>Update the local age, terms, or guardian fixture in Profile. No draft fields were discarded.</p><button className="primary-button" onClick={() => setActiveTab("profile")}>Open Profile</button></div></div></MobileScroll>;
+    return <MobileScroll className="app-screen tab-scroll"><div className="standard-page nav-padded"><PageTitle eyebrow="Participation check" title="Posting is paused." subtitle="Micro keeps the draft safe while participation requirements are incomplete." /><div className="empty-state participation-gate"><ShieldCheck size={36} weight="duotone" /><h2>{!accountCanPost ? "This account cannot post tasks." : persona === "youth" && youthAge < 15 ? "Youth Mode begins at age 15." : persona === "youth" && !guardianLinked ? "Link a guardian first." : "Accept the test terms first."}</h2><p>{!accountCanPost ? "Reload the protected account permissions or contact support before posting." : "Update the local age, terms, or guardian fixture in Profile. No draft fields were discarded."}</p><button className="primary-button" onClick={() => setActiveTab("profile")}>Open Profile</button></div></div></MobileScroll>;
   }
 
   if (published) {
@@ -1564,16 +2570,16 @@ function PostScreen() {
                   const meta = modeMeta[value];
                   const ModeIcon = meta.icon;
                   return (
-                    <button key={value} className="mode-choice" aria-pressed={mode === value} data-mode={value} data-selected={mode === value ? "true" : "false"} onClick={() => { keyboard.hide(); setMode(value); }}>
+                    <button key={value} className="mode-choice" aria-pressed={mode === value} data-mode={value} data-selected={mode === value ? "true" : "false"} disabled={value === "sponsored" && !sponsoredPostingAllowed} onClick={() => { keyboard.hide(); setMode(value); }}>
                       <span className="mode-choice-icon"><ModeIcon size={25} weight="fill" /></span>
-                      <span><strong>{meta.label}</strong><small>{value === "paid" ? "You pay the helper a fair, agreed amount." : value === "community" ? "No money changes hands." : "A sponsor pays the helper; you pay $0."}</small></span>
+                      <span><strong>{meta.label}</strong><small>{value === "paid" ? "You pay the helper a fair, agreed amount." : value === "community" ? "No money changes hands." : sponsoredPostingAllowed ? "Your verified nonprofit pays the helper; the recipient pays $0." : auth.accountType === "nonprofit" ? "Unlocks after nonprofit verification and sponsorship approval." : "Available to verified nonprofit accounts."}</small></span>
                       <span className="radio-mark">{mode === value ? <Check size={15} weight="bold" /> : null}</span>
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <div className="notice-card"><HandHeart size={22} /><div><strong>{modeMeta[availableModes[0]].label} only</strong><span>This task is offered as {modeMeta[availableModes[0]].label.toLowerCase()}, so there is nothing to choose here.</span></div></div>
+              <div className="notice-card"><HandHeart size={22} /><div><strong>{availableModes[0] === "sponsored" && !sponsoredPostingAllowed ? "Sponsored access locked" : `${modeMeta[availableModes[0]].label} only`}</strong><span>{availableModes[0] === "sponsored" && !sponsoredPostingAllowed ? auth.accountType === "nonprofit" ? "This task stays visible, but publishing unlocks only after nonprofit verification and sponsorship approval." : "This task stays visible, but only a verified nonprofit account can publish it." : `This task is offered as ${modeMeta[availableModes[0]].label.toLowerCase()}, so there is nothing to choose here.`}</span></div></div>
             )}
             <div className="section-label">When</div>
             <div className="segmented-row">{(["Tomorrow", "Saturday", "Flexible"] as const).map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setDateChoice(value); }}>{value}</button>)}</div>
@@ -1624,6 +2630,7 @@ function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 1
 
 function ActivityScreen() {
   const flow = useFlow();
+  const auth = useAuth();
   const { paidStage, sponsorFunded, sponsorSeeking, setSponsorSeeking, activeTask, communityTask, communityStage, ownedTasks, setOwnedTasks, setActiveTab, setSelectedTaskId, persona, reportedTaskIds, moderationHolds, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, setActivityPerspective, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus } = useMicro();
   const [showAllHistory, setShowAllHistory] = useState(false);
   const paidReported = reportedTaskIds.includes(activeTask.id) || Boolean(moderationHolds[activeTask.id]);
@@ -1680,13 +2687,13 @@ function ActivityScreen() {
         </section> : null}
         {showCommunity && communityTask ? <section className="activity-group"><div className="section-heading"><h2>{activityPerspective === "helper" ? "Community commitment" : "Community request"}</h2><span>1</span></div><button className="activity-card community-activity-card" onClick={() => flow.push(makeCommunityJourneyScreen(communityTask))}><div className="activity-top"><span className="status-badge community-status"><HandHeart size={14} weight="fill" /> {communityReported ? "Support review" : communityStage}</span><ArrowRight size={19} /></div><h3>{communityTask.title}</h3><p>{communityTask.time} · {communityTask.area}</p><div className="activity-bottom"><span>{communityReported ? "Participant actions paused" : "Volunteer · no payment"}</span><strong>{activityPerspective === "helper" ? "Open commitment" : "Review request"}</strong></div></button></section> : null}
         {ownedByPersona.length ? <section className="activity-group"><div className="section-heading"><h2>Posted by you</h2><span>{ownedByPersona.length}</span></div>{ownedByPersona.map((task) => { const paused = Boolean(task.listingPaused); return <article key={task.id} className="posted-card"><div className="mode-badge">{paused ? <Warning size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />} {paused ? "Paused" : "Published"}</div><h3>{task.title}</h3><p>{task.time} · {paused ? "Hidden from Nearby" : `${task.area} shown approximately`}</p><div className="success-actions">{!paused ? <button className="secondary-button" onClick={() => { setSelectedTaskId(task.id); setActiveTab("nearby"); }}>Preview listing</button> : null}<button className="text-button" onClick={() => setOwnedTasks((current) => current.map((listing) => listing.id === task.id ? { ...listing, listingPaused: !paused } : listing))}>{paused ? "Resume listing" : "Pause listing"}</button></div></article>; })}</section> : null}
-        {persona === "adult" && (sponsorSeeking || sponsorFunded) ? <section className="activity-group">
+        {persona === "adult" && (auth.demoMode || auth.capabilities.can_receive_sponsorship_requests) ? <section className="activity-group">
           <div className="section-heading"><h2>Sponsored help</h2><span>1</span></div>
           <article className="sponsor-card">
             <div className="mode-badge"><Sparkle size={14} weight="fill" /> {sponsorFunded ? "Sponsored" : sponsorSeeking ? "Seeking Sponsor" : "Community Help"}</div>
             <h3>Grocery pickup for Ana</h3>
             <p>{sponsorFunded ? "Funded in test mode · helper earns $24" : sponsorSeeking ? "Volunteer window ended · recipient pays $0" : "Volunteer window open · no payment offered"}</p>
-            {!sponsorSeeking && !sponsorFunded ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="secondary-button" onClick={() => flow.push(makeSponsorScreen())}>{sponsorFunded ? "View funded task" : "Sponsor this task"}</button>}
+            {!sponsorSeeking && !sponsorFunded ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="secondary-button" onClick={() => flow.push(makeSponsorScreen())}>{sponsorFunded ? "View funded task" : auth.demoMode || auth.canSponsor ? "Sponsor this task" : "View sponsor request"}</button>}
           </article>
         </section> : null}
         {persona !== "guardian" ? <section className="activity-group completed-group">
@@ -1983,16 +2990,19 @@ function makeSponsorScreen(): FlowScreen {
 }
 
 function SponsorScreen() {
+  const auth = useAuth();
   const { sponsorFunded, setSponsorFunded, sponsorSeeking, setSponsorSeeking } = useMicro();
+  const distanceLabel = useTaskDistanceLabel();
+  const canFund = auth.demoMode || auth.canSponsor;
   return (
     <MobileScroll className="app-screen route-scroll">
       <div className="route-page route-bottom-pad">
         {sponsorFunded ? <section className="success-view"><span className="success-seal purple"><Sparkle size={42} weight="fill" /></span><p className="eyebrow">Sponsored in test mode</p><h1>Ana’s task can now pay a helper.</h1><p>The public task shows “Sponsored” and “helper receives $24.” The recipient’s total remains $0.</p><div className="truth-card"><Info size={22} /><div><strong>No real payment was taken</strong><span>This confirms only the intended UI state.</span></div></div></section> : <>
           <p className="eyebrow">Turn a request into paid help</p><h1>Sponsor one small task.</h1><p className="lead">Fund the helper without exposing or labeling the person receiving help.</p>
-          <article className="sponsor-feature"><div className="mode-badge"><HandHeart size={14} weight="fill" /> {sponsorSeeking ? "Seeking Sponsor" : "Community Help request"}</div><h2>Grocery pickup for Ana</h2><p>{sponsorSeeking ? "The volunteer window ended without a match. A sponsor can now fund a helper." : "Pick up a prepaid grocery order and carry it to the front door."}</p><div className="task-facts"><span><MapPin size={17} /> Alum Rock · 1.4 mi</span><span><Clock size={17} /> About 45 min</span></div></article>
+          <article className="sponsor-feature"><div className="mode-badge"><HandHeart size={14} weight="fill" /> {sponsorSeeking ? "Seeking Sponsor" : "Community Help request"}</div><h2>Grocery pickup for Ana</h2><p>{sponsorSeeking ? "The volunteer window ended without a match. A sponsor can now fund a helper." : "Pick up a prepaid grocery order and carry it to the front door."}</p><div className="task-facts"><span><MapPin size={17} /> {sponsoredFixtureTask.area} · {distanceLabel(sponsoredFixtureTask)}</span><span><Clock size={17} /> About 45 min</span></div></article>
           <div className="sponsor-breakdown"><div><span>Helper receives</span><strong>$24</strong></div><div><span>Prototype fee</span><strong>$2</strong></div><div><span>Sponsor total</span><strong>$26</strong></div><div><span>Recipient pays</span><strong>$0</strong></div></div>
           <div className="privacy-note"><ShieldCheck size={20} /><span>Your name is private by default. The task only shows that a sponsor funded it.</span></div>
-          {!sponsorSeeking ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek sponsor</button> : <button className="primary-button" onClick={() => setSponsorFunded(true)}>Fund $26 in test mode</button>}
+          {!sponsorSeeking ? <button className="secondary-button" disabled={!auth.demoMode && !auth.capabilities.can_receive_sponsorship_requests} onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek sponsor</button> : canFund ? <button className="primary-button" onClick={() => setSponsorFunded(true)}>Fund $26 in test mode</button> : <div className="truth-card" role="status"><LockKey size={21} /><div><strong>Sponsorship funding is locked</strong><span>Your nonprofit can receive requests, but funding requires verified sponsor access.</span></div></div>}
         </>}
       </div>
     </MobileScroll>
@@ -2185,22 +3195,45 @@ const profileInfoTitles: Record<ProfileInfoKind, string> = {
 
 function ProfileScreen() {
   const flow = useFlow();
-  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileAreaId, setProfileAreaId, profilePhotos, setProfilePhotos } = useMicro();
+  const auth = useAuth();
+  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, acceptedTaskIds, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileAreaId, setProfileAreaId, profilePhotos, setProfilePhotos } = useMicro();
   const profileArea = areaById(profileAreaId).label;
   const [areaOpen, setAreaOpen] = useState(false);
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoError, setPhotoError] = useState("");
+  const [accountActionError, setAccountActionError] = useState("");
   const youthApproved = youthApprovedTaskId === "pantry";
   const youthPending = youthApprovalTaskId === "pantry";
   const profilePhoto = profilePhotos[persona];
   const knownTasks = [...tasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...ownedTasks, ...pastThreadTasks, activeTask, ...(communityTask ? [communityTask] : [])];
   const knownTaskIds = new Set(knownTasks.map((task) => task.id));
   const savedCount = savedTaskIds.filter((id) => knownTaskIds.has(id)).length;
-  const profile = persona === "youth"
+  const fixtureProfile: { initials: string; name: string; detail: string; stats: Array<[string, string]>; reliability: string } = persona === "youth"
     ? { initials: "SK", name: "Sam Kim", detail: `Youth profile · ${guardianLinked ? "guardian linked" : "link needed"}`, stats: [["2", "tasks completed"], ["5.0", "from 2 reviews"], ["3.5h", "volunteer time"]], reliability: "100%" }
     : persona === "guardian"
       ? { initials: "MK", name: "Maya Kim", detail: `Guardian profile · ${guardianLinked ? "Sam linked" : "link paused"}`, stats: [["4", "task reviews"], [guardianLinked ? "1" : "0", "youth linked"], ["100%", "decisions logged"]], reliability: "100%" }
       : { initials: "AK", name: "Alex Kim", detail: `${profileArea} · joined May 2026`, stats: [["12", "tasks completed"], ["4.9", "from 8 reviews"], ["7.5h", "volunteer time"]], reliability: "96%" };
+  const isLiveAccount = Boolean(auth.session && auth.profile);
+  const organizationStatus = auth.organization?.verification_status ?? "pending";
+  const organizationStatusLabel = organizationStatus.charAt(0).toUpperCase() + organizationStatus.slice(1);
+  const profile = isLiveAccount && auth.profile
+    ? {
+      initials: initialsFromName(auth.profile.display_name),
+      name: auth.profile.display_name,
+      detail: `${profileArea} · ${auth.accountType === "nonprofit" ? "nonprofit account" : "neighbor account"}`,
+      stats: [
+        [String(ownedTasks.length), "posted in preview"],
+        [String(acceptedTaskIds.length), "accepted in preview"],
+        [auth.accountType === "nonprofit" ? organizationStatusLabel : "Ready", auth.accountType === "nonprofit" ? "organization review" : "neighbor profile"],
+      ] as Array<[string, string]>,
+      reliability: null,
+    }
+    : fixtureProfile;
+  const signOut = async () => {
+    setAccountActionError("");
+    const result = await auth.signOut();
+    if (!result.ok) setAccountActionError(result.message ?? "Micro couldn't sign you out.");
+  };
   const chooseProfilePhoto = (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -2224,13 +3257,14 @@ function ProfileScreen() {
     <><MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded profile-page">
         <PageTitle eyebrow="Your neighborhood presence" title="Profile" subtitle="Control how you participate and what trust signals neighbors can see." />
-        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div></div><span className="settings-status">{persona}</span></section>
+        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? auth.accountType === "nonprofit" ? "Nonprofit" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
-        <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section>
-        <section className="settings-group"><h2>Participation</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section>
+        {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
+        <section className="settings-group"><h2>Account</h2>{isLiveAccount ? <><div className="settings-row settings-row-static"><span className="settings-icon blue"><EnvelopeSimple size={21} weight="fill" /></span><span><strong>Email</strong><small>{auth.session?.user.email ?? "Signed-in account"}</small></span><span className="settings-status">{auth.session?.user.email_confirmed_at ? "Confirmed" : "Active"}</span></div><div className="settings-row settings-row-static"><span className={`settings-icon ${auth.accountType === "nonprofit" ? "purple" : ""}`}>{auth.accountType === "nonprofit" ? <Buildings size={21} weight="fill" /> : <UserCircle size={21} weight="fill" />}</span><span><strong>{auth.accountType === "nonprofit" ? "Nonprofit account" : "Neighbor account"}</strong><small>{auth.accountType === "nonprofit" ? "Post and accept tasks; sponsorship is permission-gated" : "Post or accept nearby tasks"}</small></span></div>{auth.accountType === "nonprofit" ? <div className="settings-row settings-row-static"><span className="settings-icon purple"><SealCheck size={21} weight="fill" /></span><span><strong>{auth.organization?.name ?? "Organization profile"}</strong><small>{organizationStatus === "verified" ? auth.canSponsor ? "Verified · sponsorship enabled" : "Verified · sponsorship funding not enabled" : organizationStatus === "rejected" ? "Verification needs attention" : organizationStatus === "suspended" ? "Organization access suspended" : "Verification review pending"}</small></span><span className="settings-status">{organizationStatusLabel}</span></div> : null}</> : <div className="settings-row settings-row-static"><span className="settings-icon"><UserCircle size={21} weight="fill" /></span><span><strong>Local demo profile</strong><small>No Supabase account is active</small></span></div>}<button className="settings-row sign-out-row" disabled={auth.busy} onClick={() => void signOut()}><span className="settings-icon"><SignOut size={21} weight="bold" /></span><span><strong>{isLiveAccount ? "Sign out" : "Exit local demo"}</strong><small>{isLiveAccount ? "Return to Micro's welcome screen" : "Return to account setup"}</small></span><ArrowRight size={18} /></button>{accountActionError ? <p className="form-error account-action-error" role="alert">{accountActionError}</p> : null}</section>
+        {!isLiveAccount ? <section className="settings-group"><h2>Participation fixtures</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section> : null}
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
-        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this demo profile"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
-        <div className="demo-card"><Info size={20} /><div><strong>UI prototype</strong><span>Payments, identity, maps, messages, and task data are realistic local fixtures—not live services.</span></div></div>
+        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
+        <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Account access is live" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account and organization access. Nearby task data, approximate locations, payments, messages, and notifications remain preview fixtures." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
       </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
 }
