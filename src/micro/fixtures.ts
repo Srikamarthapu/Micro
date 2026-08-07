@@ -18,7 +18,7 @@ const seedNow = new Date();
  * slot is too close, so a seeded listing can never open already expired.
  */
 function starting(dateChoice: string, slot: string): { time: string; startsAt: Date } {
-  const startsAt = startMoment(seedNow, dateChoice, slot);
+  const startsAt = startMoment(seedNow, dateChoice, slot, true);
   if (!startsAt) throw new Error(`Fixture has no resolvable start: ${dateChoice} · ${slot}`);
   return { time: startLabel(seedNow, startsAt, slot), startsAt };
 }

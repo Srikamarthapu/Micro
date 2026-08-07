@@ -46,19 +46,21 @@ function slotOn(now: Date, offset: number, slot: string): Date {
 
 /**
  * When a listing described as "Today"/"Tomorrow"/a weekday actually starts.
- * Weekdays resolve to the next one still ahead, and a Today slot that no longer
- * leaves enough notice rolls to the same slot tomorrow, so no listing can
- * advertise a start time that has already gone by. Flexible has no moment.
+ * Weekdays resolve to the next one still ahead; Flexible has no moment.
+ *
+ * `rollForward` is for seeded listings only. A fixture names a day in the
+ * abstract, so a slot too close to give notice should mean the next day that
+ * name can stand for. A date a requester picked is an instruction, not a
+ * description: "Today" means today even a minute inside the notice window, or
+ * the listing would start a day away from the one its own label promises.
  */
-export function startMoment(now: Date, dateChoice: string, slot: string): Date | undefined {
+export function startMoment(now: Date, dateChoice: string, slot: string, rollForward = false): Date | undefined {
   if (dateChoice === "Tomorrow") return slotOn(now, 1, slot);
   const weekday = weekdayNames.indexOf(dateChoice);
   if (dateChoice !== "Today" && weekday < 0) return undefined;
   const offset = weekday < 0 ? 0 : (weekday - now.getDay() + 7) % 7;
   const start = slotOn(now, offset, slot);
-  if (start.getTime() - now.getTime() >= sameDayLeadMinutes * 60000) return start;
-  // Too close to give anyone notice, so it means the next day this choice can
-  // stand for: tomorrow for Today, a week on for a named weekday.
+  if (!rollForward || start.getTime() - now.getTime() >= sameDayLeadMinutes * 60000) return start;
   return slotOn(now, offset + (weekday < 0 ? 1 : 7), slot);
 }
 
@@ -90,6 +92,11 @@ function spanLabel(minutes: number): string {
   const rest = minutes % 60;
   if (!hours) return `${minutes} min`;
   return rest ? `${hours} hr ${rest} min` : `${hours} hr`;
+}
+
+/** Whether a start falls on the day someone is looking at it. */
+export function startsToday(now: Date, start: Date): boolean {
+  return start.getFullYear() === now.getFullYear() && start.getMonth() === now.getMonth() && start.getDate() === now.getDate();
 }
 
 /** The countdown on an accepted job, from far out through already underway. */

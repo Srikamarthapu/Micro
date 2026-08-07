@@ -513,6 +513,7 @@
 
 /* Close enough to head over: the card lifts off the sheet and the countdown
    carries the weight, so the change is legible without reading a word. */
+.active-job[data-stage="today"] { border-color: #9fd4c8; }
 .active-job[data-stage="soon"],
 .active-job[data-stage="now"] { border-color: var(--micro-teal); background: #fff; box-shadow: var(--micro-shadow); }
 .active-job[data-stage="soon"] .active-job-countdown,
@@ -585,6 +586,9 @@
 .composed-listing { display: grid; gap: 8px; padding: 15px; border: 1px solid var(--micro-line); border-radius: 16px; background: #fffdfa; }
 .composed-listing h3 { margin: 0; font-size: 18px; line-height: 1.2; }
 .composed-listing > p:not(.eyebrow) { margin: 0; color: #46566a; font-size: 13px; line-height: 1.45; }
+/* Duration and pay read as one attribute line on the listing, not two tiles. */
+.composed-listing > p.composed-meta { color: var(--micro-teal-dark); font-size: 12px; font-weight: 800; }
+.composed-listing > .history-toggle { justify-self: start; margin-top: 0; }
 .derived-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .derived-facts > div { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; }
 .derived-facts span { color: var(--micro-ink-soft); font-size: 11px; font-weight: 700; }
@@ -718,10 +722,22 @@
 .detail-pay-card strong { margin-top: 4px; color: var(--micro-teal-dark); font-size: 18px; }
 .detail-pay-card p { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 12px; border-top: 1px solid #cfe0d9; color: #4a665d; font-size: 11px; line-height: 1.35; }
 .detail-secondary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-/* Refusing a job is a preference, not a report, so it stays quiet rather than
-   red. Doubled selector so it wins over .quiet-action's danger color below. */
-.quiet-action.detail-refuse-action { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; margin: -4px 0 10px; padding: 0; border: 0; background: transparent; color: var(--micro-ink-soft); font-size: 13px; font-weight: 800; }
-.quiet-action.detail-refuse-action[aria-pressed="true"] { color: var(--micro-teal-dark); }
+/* The two answers to a job sit side by side: refuse square, then accept. */
+.actionbar-row { display: flex; align-items: stretch; gap: 10px; }
+.actionbar-row .primary-button { flex: 1 1 auto; min-width: 0; }
+.actionbar-stack { display: grid; gap: 6px; }
+
+/* Prototype-only stand-in for a second account. Deliberately quiet and plainly
+   named: it must never read like a normal way to take on a neighbor's job. */
+.neighbor-preview-toggle { width: 100%; padding: 8px 4px; border: 0; border-radius: 10px; background: none; color: var(--micro-ink-soft); font-size: 12px; font-weight: 800; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.neighbor-preview-toggle:hover { color: var(--micro-teal-dark); }
+.refuse-square-button { display: grid; width: 56px; flex: 0 0 56px; place-items: center; border: 1px solid var(--micro-line); border-radius: 16px; background: #fff; color: var(--micro-ink-soft); }
+.refuse-square-button[aria-pressed="true"] { border-color: var(--micro-teal); background: #e5f4f0; color: var(--micro-teal-dark); }
+
+/* Card-level refusal: quiet until the card is touched, never competing with
+   the mode badge beside it. */
+.task-refuse-button { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: #90a1b2; }
+.task-refuse-button:hover { background: #eef3f8; color: var(--micro-ink); }
 .detail-secondary-actions .secondary-button { min-width: 0; padding: 0 10px; }
 
 .post-mode-strip { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 16px; padding: 10px 12px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; }
@@ -757,12 +773,14 @@
 .status-summary strong,
 .status-summary span { display: block; }
 .status-summary > div > span { margin-top: 3px; color: var(--micro-ink-soft); font-size: 13px; }
-.notification-entry { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; width: 100%; min-height: 50px; margin: -13px 0 18px; padding: 0 11px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; color: var(--micro-ink); text-align: left; }
+.notification-entry { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; width: 100%; min-height: 50px; margin: 4px 0 18px; padding: 0 11px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; color: var(--micro-ink); text-align: left; }
 .notification-entry > span { display: flex; align-items: center; gap: 8px; color: var(--micro-teal-dark); }
 .notification-entry small { color: var(--micro-ink-soft); }
 .perspective-switch { display: grid; gap: 7px; margin: 0 0 18px; padding: 12px; border: 1px solid #d9cfbf; border-radius: 16px; background: #f5efe6; }
 .perspective-switch legend { padding: 0 4px; color: var(--micro-ink); font-size: 12px; font-weight: 850; }
 .perspective-switch p { margin: 0; color: var(--micro-ink-soft); font-size: 11px; line-height: 1.35; }
+/* A test control should not carry as much weight as a real commitment. */
+.perspective-switch.compact-perspective { gap: 5px; margin-bottom: 16px; padding: 8px 10px 10px; background: #f7f3ec; }
 .route-perspective { margin: 13px 0; }
 .guardian-activity-card { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 14px; border: 1px solid #dfd0ef; border-radius: 18px; background: #fbf7ff; color: var(--micro-purple); }
 .guardian-activity-card span,
@@ -1597,7 +1615,7 @@
 
 .task-requester-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   margin-bottom: 10px;

@@ -81,7 +81,7 @@ import {
 } from "./taskCatalog";
 import { supabase } from "./supabase";
 import { areaById, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
-import { arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startMoment, startTimeSlots } from "./micro/schedule";
+import { arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
 import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
 import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
 import { AuthProvider, initialsFromName, useAuth, type AuthContextValue } from "./micro/AuthProvider";
@@ -794,7 +794,7 @@ function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId, refusedJ
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, refusedJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, refusedJobIds, setRefusedJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -834,7 +834,7 @@ function NearbyScreen() {
   // the commitment is the first thing you see and it is obvious why nothing
   // else can be accepted yet.
   const activeCommitment = taskPool.find((task) => acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id));
-  const allTasks = taskPool.filter((task) => !hasExpired(task, browsedAt) && !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
+  const allTasks = taskPool.filter((task) => !hasExpired(task, browsedAt) && !refusedJobIds.includes(task.id) && !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
   const selected = allTasks.find((task) => task.id === selectedTaskId) ?? allTasks[0];
   const visibleTasks = allTasks.filter(
     (task) =>
@@ -883,6 +883,10 @@ function NearbyScreen() {
   useEffect(() => {
     if (primaryVisibleTask && selectedTaskId !== primaryVisibleTask.id) setSelectedTaskId(primaryVisibleTask.id);
   }, [primaryVisibleTask, selectedTaskId, setSelectedTaskId]);
+
+  // Refusing from a card drops the job out of the list and out of the bell;
+  // Filters keeps a restore-all so nothing is hidden irreversibly.
+  const refuseJob = (task: Task) => setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]);
 
   const openTask = (task: Task) => {
     setSelectedTaskId(task.id);
@@ -953,8 +957,8 @@ function NearbyScreen() {
             {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
             {visibleTasks.length && primaryVisibleTask ? (
               <div className="task-list">
-                <TaskCard task={primaryVisibleTask} selected blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} />
-                {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} />)}
+                <TaskCard task={primaryVisibleTask} selected blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />
+                {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />)}
               </div>
             ) : (
               <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
@@ -976,6 +980,7 @@ function NearbyScreen() {
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>When</legend><div className="segmented-row">{(["any", "today", "weekend"] as const).map((value) => <button key={value} aria-pressed={when === value} data-active={when === value ? "true" : "false"} onClick={() => setWhen(value)}>{value === "any" ? "Any time" : value === "today" ? "Today" : "Weekend"}</button>)}</div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Distance</legend><div className="segmented-row two-segments">{([1, 3] as const).map((value) => <button key={value} aria-pressed={radius === value} data-active={radius === value ? "true" : "false"} onClick={() => setRadius(value)}>Within {value} mi</button>)}</div></fieldset>
           <button className="choice-row" aria-pressed={youthOnly} data-selected={youthOnly ? "true" : "false"} onClick={() => setYouthOnly((current) => !current)}><span><strong>Youth-eligible only</strong><small>Guardian approval is still task-specific</small></span><span className="checkbox">{youthOnly ? <Check size={14} weight="bold" /> : null}</span></button>
+          {refusedJobIds.length ? <button className="choice-row" onClick={() => setRefusedJobIds([])}><span><strong>Refused jobs</strong><small>{refusedJobIds.length} hidden from this list and from notifications</small></span><span className="settings-status">Restore all</span></button> : null}
           <div className="info-strip"><MapPin size={18} /> Within about {radius} {radius === 1 ? "mile" : "miles"} of {activeArea.label}</div>
           <button className="primary-button" onClick={() => setFiltersOpen(false)}>Show {visibleTasks.length} {visibleTasks.length === 1 ? "task" : "tasks"}</button>
         </div>
@@ -999,6 +1004,29 @@ function useTaskDistanceLabel() {
   const { profileAreaId } = useMicro();
   const origin = areaById(profileAreaId).center;
   return (task: Task) => formatDistance(distanceMiles(origin, task.coords));
+}
+
+/**
+ * Who a listing belongs to, and whether one of yours is currently standing in
+ * as a neighbor's. With no second account to post from, that stand-in is the
+ * only way to walk the helper side of a task you composed yourself, so it is a
+ * prototype affordance and every surface says so.
+ */
+function useListingOwnership() {
+  const { persona, neighborPreviewIds, setNeighborPreviewIds } = useMicro();
+  const auth = useAuth();
+  const mine = (task: Task) => (task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona);
+  const previewing = (task: Task) => neighborPreviewIds.includes(task.id);
+  return {
+    mine,
+    previewing,
+    /** Treated as yours: the requester controls, not the helper ones. */
+    isOwned: (task: Task) => mine(task) && !previewing(task),
+    toggle: (task: Task) =>
+      setNeighborPreviewIds((current) =>
+        current.includes(task.id) ? current.filter((id) => id !== task.id) : [...current, task.id],
+      ),
+  };
 }
 
 function taskAvatar(task: Task, profilePhotos: Record<Persona, string>) {
@@ -1111,21 +1139,15 @@ function MapHealthCheck({ onUnavailable }: { onUnavailable: (reason: string) => 
   const map = useMap();
   useEffect(() => {
     if (!map) return;
-    let settled = false;
     const painted = () => Boolean(map.getDiv()?.querySelector(".gm-style"));
-    // Poll rather than judging once: a cold load can paint well after a fixed
-    // deadline, and a verdict that never clears reports a working map as broken.
+    // Keep watching for the whole life of the map rather than judging once. A
+    // cold load can paint well after any fixed deadline, so the notice has to be
+    // able to clear itself again — otherwise a working map reads as broken.
     const poll = setInterval(() => {
-      if (settled || !painted()) return;
-      settled = true;
-      clearInterval(poll);
-      onUnavailable("");
+      if (painted()) { clearInterval(poll); onUnavailable(""); }
     }, 400);
     const deadline = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      clearInterval(poll);
-      if (!painted()) onUnavailable("Map could not load · see console");
+      if (!painted()) onUnavailable("Map is taking longer than usual");
     }, 8000);
     return () => { clearInterval(poll); clearTimeout(deadline); };
   }, [map, onUnavailable]);
@@ -1203,18 +1225,20 @@ function MapTaskPin({ task, active, exact = false, size, onSelect }: { task: Tas
   );
 }
 
-type JobStage = "scheduled" | "soon" | "now";
+type JobStage = "scheduled" | "today" | "soon" | "now";
 
 /**
- * How much of your attention an accepted job has earned: booked for later, close
- * enough that you should be heading over, or already underway. A job with no
- * resolvable start never escalates, since there is no moment to count down to.
+ * How much of your attention an accepted job has earned: booked for another day,
+ * happening today, close enough that you should be heading over, or already
+ * underway. A job with no resolvable start never escalates, since there is no
+ * moment to count down to.
  */
 function jobStageFor(task: Task, now: Date): JobStage {
   if (!task.startsAt) return "scheduled";
   const minutes = minutesUntil(now, task.startsAt);
   if (minutes <= 0) return "now";
-  return minutes <= arrivalWindowMinutes ? "soon" : "scheduled";
+  if (minutes <= arrivalWindowMinutes) return "soon";
+  return startsToday(now, task.startsAt) ? "today" : "scheduled";
 }
 
 /**
@@ -1233,7 +1257,7 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
   return (
     <article className="active-job" data-stage={stage}>
       <header className="active-job-head">
-        <p className="active-job-label"><span className="live-dot" aria-hidden="true" /> {stage === "now" ? "Job underway" : stage === "soon" ? "Job coming up" : "Your active job"}</p>
+        <p className="active-job-label"><span className="live-dot" aria-hidden="true" /> {stage === "now" ? "Job underway" : stage === "soon" ? "Job coming up" : stage === "today" ? "Job today" : "Your active job"}</p>
         <p className="active-job-countdown" role={stage === "scheduled" ? undefined : "status"}>{task.startsAt ? countdownLabel(now, task.startsAt) : task.time}</p>
       </header>
       <h2>{task.title}</h2>
@@ -1271,20 +1295,21 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
   );
 }
 
-function TaskCard({ task, selected = false, unavailable = false, blockedReason, onOpen }: { task: Task; selected?: boolean; unavailable?: boolean; blockedReason?: string; onOpen: (task: Task) => void }) {
+function TaskCard({ task, selected = false, unavailable = false, blockedReason, onOpen, onRefuse }: { task: Task; selected?: boolean; unavailable?: boolean; blockedReason?: string; onOpen: (task: Task) => void; onRefuse?: (task: Task) => void }) {
   const ModeIcon = modeMeta[task.mode].icon;
   const TaskIcon = task.icon;
-  const { persona } = useMicro();
-  const auth = useAuth();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
-  const isOwnedListing = task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona;
+  const ownership = useListingOwnership();
+  const isOwnedListing = ownership.isOwned(task);
   return (
     <article className="task-card" data-selected={selected ? "true" : "false"} data-mode={task.mode} data-unavailable={unavailable ? "true" : "false"}>
       <div className="task-requester-row">
         <span className="task-icon" aria-hidden="true"><TaskIcon size={22} weight="bold" /></span>
         <div><strong>{detail.requester}</strong><span>{task.area} · {distanceLabel(task)}</span></div>
         <div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[task.mode].label}</div>
+        {/* Refuse without opening the job: the card leaves the list and stops notifying. */}
+        {onRefuse && !isOwnedListing && !unavailable ? <button className="task-refuse-button" aria-label={`Refuse ${task.title}`} onClick={() => onRefuse(task)}><X size={16} weight="bold" aria-hidden="true" /></button> : null}
       </div>
       {task.customPending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       <div className="task-heading-pay">
@@ -1302,6 +1327,13 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
       {selected ? <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button> : (
         <button className="card-link" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View details"} {!unavailable ? <ArrowRight size={17} /> : null}</button>
       )}
+      {/* Prototype only: there is no second account to post from, so a listing
+          of your own can stand in as a neighbor's to walk the helper side. */}
+      {!unavailable && ownership.mine(task) ? (
+        <button className="neighbor-preview-toggle" onClick={() => ownership.toggle(task)}>
+          {ownership.previewing(task) ? "Stop previewing as a neighbor" : "Accept as a neighbor (prototype only)"}
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -1351,7 +1383,8 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
   const isSaved = savedTaskIds.includes(task.id);
   const listingReported = reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]);
   const isRefused = refusedJobIds.includes(task.id);
-  const isOwnedListing = task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona;
+  const ownership = useListingOwnership();
+  const isOwnedListing = ownership.isOwned(task);
   const youthBlocked = persona === "youth" && (!task.youthEligible || youthAge < 15 || !guardianLinked || !accessTermsAccepted);
   const needsApproval = persona === "youth" && task.youthEligible && youthApprovedTaskId !== task.id;
   const accountCanAccept = auth.demoMode || auth.capabilities.can_accept_tasks;
@@ -1389,6 +1422,14 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
     <div className="route-screen">
       <MobileScroll className="app-screen route-scroll">
         <div className="route-page with-actionbar">
+          {/* Standing in front of your own listing must never be mistakable for
+              a real match, so it is said plainly wherever the listing appears. */}
+          {ownership.previewing(task) ? (
+            <div className="truth-card custom-truth" role="status">
+              <Warning size={22} weight="fill" />
+              <div><strong>Previewing your own listing as a neighbor</strong><span>Prototype only — this stands in for a second account so you can walk the helper side. <button className="text-button" onClick={() => ownership.toggle(task)}>Stop previewing</button></span></div>
+            </div>
+          ) : null}
           {phase === "accepted" ? (
             <section className="success-view" role="status" aria-live="polite">
               <span className="success-seal"><CheckCircle size={46} weight="fill" /></span>
@@ -1464,16 +1505,15 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
               {task.mode !== "community" && task.earning ? <section className="detail-pay-card"><div><span>Helper receives</span><strong>${task.earning}</strong></div><div><span>Hourly equivalent</span><strong>~${Math.round((task.earning * 60) / Number(task.duration.match(/\d+/)?.[0] || 60))}/hr</strong></div><div><span>Funder total</span><strong>${task.earning + Math.max(2, Math.round(task.earning * 0.05)) + Math.max(1, Math.round(task.earning * 0.03))}</strong></div><p><ShieldCheck size={17} weight="fill" /> Payment secured only after a confirmed match; helper earnings are not reduced.</p></section> : null}
               <div className="detail-secondary-actions"><button className="secondary-button" aria-pressed={isSaved} onClick={() => setSavedTaskIds((current) => isSaved ? current.filter((id) => id !== task.id) : [...current, task.id])}><Tag size={18} weight={isSaved ? "fill" : "regular"} /> {isSaved ? "Saved" : "Save task"}</button><button className="secondary-button danger-copy" disabled={listingReported} onClick={() => { const reason = "Standard priority · listing scope or safety concern · no evidence attached"; setReportedTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]); setReportReasons((current) => ({ ...current, [task.id]: reason })); setModerationHolds((current) => ({ ...current, [task.id]: "Task actions are paused for support review." })); appendTaskEvent(setTaskEvents, task.id, "Listing report recorded; matching paused for support review."); }}><Warning size={18} /> {listingReported ? "In support review" : "Report listing"}</button></div>
               {listingReported ? <div className="status-receipt" role="status"><CheckCircle size={18} weight="fill" /> Listing review recorded locally. Matching is paused pending support-authority review.</div> : null}
-              {/* Refusing is about notifications, not moderation: no report is filed
-                  and the listing stays browsable in Nearby. */}
-              {isOwnedListing ? null : <button className="quiet-action detail-refuse-action" aria-pressed={isRefused} onClick={() => { if (isRefused) { setRefusedJobIds((current) => current.filter((id) => id !== task.id)); return; } setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]); onDone(); }}>{isRefused ? <><Bell size={18} /> Notify me about this job again</> : <><X size={18} /> Refuse this job · stop notifying me</>}</button>}
               <div className="privacy-note"><Info size={19} /><span><strong>Approximate by design.</strong> Neighbours see a {privacyRadiusMi}-mile area, not a pin on your door. The exact address is shared only after a protected match.</span></div>
             </>
           )}
         </div>
       </MobileScroll>
       <div className="route-actionbar">
-        {phase === "detail" ? isOwnedListing ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Manage listing in Activity <ArrowRight size={19} /></button> : <button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment || requesterBlocked || youthBlocked || !accessTermsAccepted || persona === "guardian" || listingReported} onClick={() => setPhase("review")}>{!accountCanAccept ? "Account cannot accept tasks" : listingReported ? "Listing is in review" : persona === "guardian" ? "Guardian view cannot accept tasks" : hasOtherCommitment ? "Finish your active commitment first" : requesterBlocked ? "Blocked from this requester" : !accessTermsAccepted ? "Accept terms to participate" : persona === "youth" && youthAge < 15 ? "Youth Mode is for ages 15–17" : persona === "youth" && !guardianLinked ? "Link a guardian first" : youthBlocked ? "Unavailable in Youth Mode" : task.mode === "community" ? "Volunteer for this" : "I can help"}</button> : null}
+        {/* The refusal sits beside the accept button so the two answers to a job
+           are offered in the same place. */}
+        {phase === "detail" ? isOwnedListing ? <div className="actionbar-stack"><button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Manage listing in Activity <ArrowRight size={19} /></button><button className="neighbor-preview-toggle" onClick={() => ownership.toggle(task)}>Accept as a neighbor (prototype only)</button></div> : <div className="actionbar-row"><button className="refuse-square-button" aria-pressed={isRefused} aria-label={isRefused ? "Notify me about this job again" : "Refuse this job"} onClick={() => { if (isRefused) { setRefusedJobIds((current) => current.filter((id) => id !== task.id)); return; } setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]); onDone(); }}>{isRefused ? <Bell size={22} weight="fill" aria-hidden="true" /> : <X size={22} weight="bold" aria-hidden="true" />}</button><button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment || requesterBlocked || youthBlocked || !accessTermsAccepted || persona === "guardian" || listingReported} onClick={() => setPhase("review")}>{!accountCanAccept ? "Account cannot accept tasks" : listingReported ? "Listing is in review" : persona === "guardian" ? "Guardian view cannot accept tasks" : hasOtherCommitment ? "Finish your active commitment first" : requesterBlocked ? "Blocked from this requester" : !accessTermsAccepted ? "Accept terms to participate" : persona === "youth" && youthAge < 15 ? "Youth Mode is for ages 15–17" : persona === "youth" && !guardianLinked ? "Link a guardian first" : youthBlocked ? "Unavailable in Youth Mode" : task.mode === "community" ? "Volunteer for this" : "I can help"}</button></div> : null}
         {phase === "review" ? <button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment} onClick={accept}>{!accountCanAccept ? "Account cannot accept tasks" : hasOtherCommitment ? "Another commitment is active" : needsApproval ? "Request guardian approval" : "Accept this task"}</button> : null}
         {phase === "approval" ? <button className="primary-button" onClick={() => { setActiveTab("profile"); onDone(); }}>Open Youth Mode <ArrowRight size={19} /></button> : null}
         {phase === "accepted" ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Go to Activity <ArrowRight size={19} /></button> : null}
@@ -1490,6 +1530,8 @@ function PostScreen() {
   const profileArea = listingArea.label;
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
+  // Step 3 reviews the full listing, so the scope rows start folded here.
+  const [scopeOpen, setScopeOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -1621,6 +1663,7 @@ function PostScreen() {
 
   const publish = () => {
     if (!scopeValid || !logisticsValid) return;
+    const listingStart = startMoment(now, dateChoice, startTime);
     const created: Task = {
       id: `posted-${Date.now()}`,
       title: listing.title,
@@ -1633,8 +1676,10 @@ function PostScreen() {
       },
       areaId: listingArea.id,
       area: profileArea,
-      time: `${dateChoice} · ${startTime}`,
-      startsAt: startMoment(now, dateChoice, startTime),
+      // Label and moment come from the same resolution, so a listing can never
+      // read "Today" while counting down to a different day.
+      time: listingStart ? startLabel(now, listingStart, startTime) : `${dateChoice} · ${startTime}`,
+      startsAt: listingStart,
       duration: listing.duration,
       icon: template.icon,
       category: template.category,
@@ -1846,24 +1891,33 @@ function PostScreen() {
 
         {step === 1 ? (
           <section className="form-section">
+            {/* The preview card below shows Micro writing the listing, so the
+                caption that used to say so has been dropped. */}
             <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set the specifics</h2>
-            <p className="catalog-intro">Answer a few questions and Micro writes the listing for you.</p>
             {template.options.length ? template.options.map((control) => (
               <fieldset key={control.id} className="choice-fieldset compact-choice-fieldset">
                 <legend>{control.label}</legend>
                 <div className="segmented-row" data-choices={control.choices.length}>{control.choices.map((choice) => <button key={choice.id} aria-pressed={selections[control.id] === choice.id} data-active={selections[control.id] === choice.id ? "true" : "false"} onClick={() => setChoice(control.id, choice.id)}>{choice.label}</button>)}</div>
               </fieldset>
             )) : <p className="catalog-intro">This task has no options to set — the scope below is the whole job.</p>}
+            {/* Duration and pay describe this listing, so they live in its card
+                rather than as two more tiles under it. The scope rows stay
+                folded: they are the whole of step 3, and repeating them in full
+                here is what made this step a wall. */}
             <section className="composed-listing">
               <p className="eyebrow">What neighbors will read</p>
               <h3>{listing.title}</h3>
               <p>{listing.details}</p>
-              <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /></div>
+              <p className="composed-meta">{listing.duration} · suggested ${listing.suggestedPay}</p>
+              <button className="history-toggle" aria-expanded={scopeOpen} onClick={() => setScopeOpen((current) => !current)}>{scopeOpen ? "Hide scope" : "See included, excluded, and completion"}<CaretDown size={16} weight="bold" aria-hidden="true" /></button>
+              {scopeOpen ? <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /></div> : null}
             </section>
-            <div className="derived-facts"><div><span>Suggested duration</span><strong>{listing.duration}</strong></div><div><span>Suggested pay</span><strong>${listing.suggestedPay}</strong></div></div>
             <button className="choice-row risk-confirm" aria-pressed={riskConfirmed} data-selected={riskConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setRiskConfirmed((current) => !current); }}><span><strong>{template.category} safety boundary</strong><small>{template.boundary}</small></span><span className="checkbox">{riskConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
             <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
-            <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> Photos are optional. The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button>
+            {/* Only a chosen photo needs acknowledging (`scopeValid`), so the
+                guidance appears with one instead of standing in the way of
+                everyone who never adds a photo at all. */}
+            {photoPreview ? <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button> : null}
             {!scopeValid ? <p className="form-error" role="alert">{!riskConfirmed ? "Confirm the safety boundary for this task before continuing." : "Review the photo privacy guidance before continuing with this image."}</p> : null}
             <div className="form-actions form-actions-single"><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(2)}>Timing &amp; pay</button></div>
           </section>
@@ -2033,13 +2087,26 @@ function ActivityScreen() {
   const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
   const organizationAccess = organizationAccessDetails(auth);
   const openSponsorshipRequests = auth.capabilities.can_receive_sponsorship_requests && !sponsorFunded ? 1 : 0;
+  // The banner only earns its space when it says something the cards below do
+  // not: participation is paused, support is involved, or there is nothing to
+  // list at all. Above a healthy commitment it just repeats the card's own
+  // status, title, and next step back at you.
+  const showAttentionBanner =
+    !participationReady ||
+    persona === "guardian" ||
+    (paidReported && showPaid) ||
+    (communityReported && showCommunity) ||
+    showReopened ||
+    !hasActiveCommitment;
 
   return (
     <MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded">
         <button className="tab-back-link" onClick={() => setActiveTab("profile")}><CaretLeft size={15} weight="bold" /> Profile</button>
-        <PageTitle eyebrow={isLiveNonprofit ? "Personal + organization activity" : "Your commitments"} title="Activity" subtitle={isLiveNonprofit ? "Your tasks and organization sponsorships, kept in one place." : "Every task keeps one plain-language status from match through completion."} />
-        <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section>
+        {/* The eyebrow used to repeat the first section heading and the subtitle
+            explained a convention the cards already demonstrate. */}
+        <PageTitle title="Activity" />
+        {showAttentionBanner ? <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section> : null}
         {isLiveNonprofit ? <button className="organization-entry" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}>
           <span className="organization-entry-icon"><Buildings size={23} weight="fill" /></span>
           <span className="organization-entry-copy">
@@ -2048,8 +2115,9 @@ function ActivityScreen() {
           </span>
           <span className="organization-entry-end"><span className="organization-status" data-status={organizationAccess.status}>{organizationAccess.statusLabel}</span><ArrowRight size={19} weight="bold" /></span>
         </button> : null}
-        <button className="notification-entry" onClick={() => flow.push(makeNotificationsScreen())}><span><Bell size={20} weight="fill" /><strong>Notifications</strong></span><small>{isLiveNonprofit ? "Tasks + sponsorships" : "Role-aware updates"}</small><ArrowRight size={18} /></button>
-        {hasActiveCommitment ? <fieldset className="perspective-switch"><legend>Prototype perspective</legend><div className="segmented-row two-segments"><button aria-pressed={activityPerspective === "helper"} data-active={activityPerspective === "helper" ? "true" : "false"} onClick={() => setActivityPerspective("helper")}>{showCommunity ? "Volunteer" : "Helper"}</button><button aria-pressed={activityPerspective === "requester"} data-active={activityPerspective === "requester" ? "true" : "false"} onClick={() => setActivityPerspective("requester")}>Requester</button></div><p>{activityPerspective === "helper" ? "Your accepted commitment and actions." : "A clearly labeled seeded requester view for testing confirmation and arrival support."}</p></fieldset> : null}
+        {/* A testing control, so it stays quiet and only explains itself in the
+            seeded view, where the caveat actually matters. */}
+        {hasActiveCommitment ? <fieldset className="perspective-switch compact-perspective"><legend>Prototype perspective</legend><div className="segmented-row two-segments"><button aria-pressed={activityPerspective === "helper"} data-active={activityPerspective === "helper" ? "true" : "false"} onClick={() => setActivityPerspective("helper")}>{showCommunity ? "Volunteer" : "Helper"}</button><button aria-pressed={activityPerspective === "requester"} data-active={activityPerspective === "requester" ? "true" : "false"} onClick={() => setActivityPerspective("requester")}>Requester</button></div>{activityPerspective === "requester" ? <p>A clearly labeled seeded requester view for testing confirmation and arrival support.</p> : null}</fieldset> : null}
         {persona === "guardian" && guardianTask ? <section className="guardian-activity-card"><ShieldCheck size={24} weight="fill" /><div><span>{youthApprovalTaskId ? "Approval requested" : guardianSupervisedTaskId === guardianTask.id ? "Sam’s task lifecycle" : "Approved for Sam"}</span><strong>{guardianTask.title}</strong><small>{guardianSupervisedTaskId === guardianTask.id && guardianSupervisionStatus ? guardianSupervisionStatus : "This is not your commitment. Review it from Youth Mode."}</small></div><button className="secondary-button" onClick={() => { setActiveTab("profile"); }}>Open Youth Mode</button></section> : null}
         {showReopened ? <section className="activity-group"><div className="section-heading"><h2>Needs a new match</h2><span>1</span></div><article className="posted-card"><div className="mode-badge"><Warning size={14} weight="fill" /> Reopened</div><h3>{activeTask.title}</h3><p>Payment hold released · visible in Nearby again</p><button className="secondary-button" onClick={() => { setSelectedTaskId(activeTask.id); setActiveTab("nearby"); }}>See reopened listing</button></article></section> : null}
         {showPaid ? <section className="activity-group">
@@ -2079,6 +2147,9 @@ function ActivityScreen() {
           {visibleCompletedItems.map(({ id, icon: HistoryIcon, title, copy }) => <div key={id} className="compact-history"><HistoryIcon size={20} weight="fill" /><div><strong>{title}</strong><span>{copy}</span></div></div>)}
           {completedItems.length > 1 ? <button className="history-toggle" aria-expanded={showAllHistory} onClick={() => setShowAllHistory((current) => !current)}>{showAllHistory ? "Show less" : `View all ${completedItems.length}`}<CaretDown size={16} weight="bold" aria-hidden="true" /></button> : null}
         </section> : null}
+        {/* A destination rather than activity, and the Nearby bell already
+            reaches it, so it sits after the tasks instead of ahead of them. */}
+        <button className="notification-entry" onClick={() => flow.push(makeNotificationsScreen())}><span><Bell size={20} weight="fill" /><strong>Notifications</strong></span><small>{isLiveNonprofit ? "Tasks + sponsorships" : "Role-aware updates"}</small><ArrowRight size={18} /></button>
       </div>
     </MobileScroll>
   );
@@ -2139,6 +2210,19 @@ function NotificationsScreen() {
   else if (youthApprovedTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: "Youth task approved", copy: "Approval covers only this task, scope, and scheduled time; no assignment exists until acceptance.", time: "Now", tab: "profile" });
   else if (persona === "guardian" && guardianSupervisedTaskId) notices.unshift({ icon: ShieldCheck, title: "Youth task lifecycle", copy: guardianSupervisionStatus || "Sam’s task remains visible for task-specific guardian context.", time: "Now", tab: "profile" });
   if (lifecycleTask && activeMatch) {
+    // Once the start is close, the countdown leads: it is the only notice whose
+    // wording changes with the clock, so it goes first and says where to go.
+    const arrivalStage = jobStageFor(lifecycleTask, new Date());
+    const arrivalStart = arrivalStage === "soon" || arrivalStage === "now" ? lifecycleTask.startsAt : undefined;
+    if (arrivalStart) {
+      notices.unshift({
+        icon: NavigationArrow,
+        title: `${countdownLabel(new Date(), arrivalStart)} · ${lifecycleTask.title}`,
+        copy: `Head to ${getTaskDetails(lifecycleTask).address}. The address and scope are on the job card in Nearby.`,
+        time: "Now",
+        tab: "nearby",
+      });
+    }
     notices.push(
       { icon: SealCheck, title: "Match confirmed", copy: `${lifecycleTask.title} has protected task details ready for this profile.`, time: "2m", tab: "activity" },
       { icon: ChatCircle, title: "Task thread ready", copy: "Use the protected thread for arrival, scope changes, and safety context.", time: "7m", tab: "messages" },

@@ -94,6 +94,13 @@ export type MicroContextValue = {
   /** Jobs refused from task details; they stop generating notices entirely. */
   refusedJobIds: string[];
   setRefusedJobIds: Dispatch<SetStateAction<string[]>>;
+  /**
+   * Listings of your own you are standing in front of as if a neighbor had
+   * posted them. Prototype-only: without a second account there is no other way
+   * to walk the helper side of a task you composed yourself.
+   */
+  neighborPreviewIds: string[];
+  setNeighborPreviewIds: Dispatch<SetStateAction<string[]>>;
   profileAreaId: AreaId;
   setProfileAreaId: (areaId: AreaId) => void;
   profilePhotos: Record<Persona, string>;
@@ -171,6 +178,7 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   // state, not part of a seeded persona fixture.
   const [seenSpecialJobIds, setSeenSpecialJobIds] = useState<string[]>([]);
   const [refusedJobIds, setRefusedJobIds] = useState<string[]>([]);
+  const [neighborPreviewIds, setNeighborPreviewIds] = useState<string[]>([]);
   const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
   const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
   const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
@@ -298,12 +306,14 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       setSeenSpecialJobIds,
       refusedJobIds,
       setRefusedJobIds,
+      neighborPreviewIds,
+      setNeighborPreviewIds,
       profileAreaId,
       setProfileAreaId,
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
