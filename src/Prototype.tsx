@@ -2577,7 +2577,17 @@ function PostScreen() {
   const sponsoredPostingAllowed = auth.demoMode || auth.canSponsor;
   const draftChanged = JSON.stringify(postDraft) !== JSON.stringify(initialPostDraft);
   const scopeValid = riskConfirmed && (!photoPreview || photoAcknowledged);
-  const logisticsValid = timeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady && (mode !== "sponsored" || sponsoredPostingAllowed);
+  // Named one by one, because a message that repeats requirements already met
+  // sends people hunting for a field that is in fact filled in.
+  const logisticsProblems = [
+    !timeSlots.includes(startTime) ? "pick a start time" : "",
+    !privateAddress.trim() ? "add your private match address" : "",
+    mode !== "community" && numericAmount < 15 ? "set a helper amount of at least $15" : "",
+    !safetyConfirmed ? "confirm the safety and cancellation terms" : "",
+    !participationReady ? "restore participation access in Profile" : "",
+    mode === "sponsored" && !sponsoredPostingAllowed ? "finish nonprofit verification to publish a sponsored task" : "",
+  ].filter(Boolean);
+  const logisticsValid = logisticsProblems.length === 0;
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
   const backToCatalog = () => {
     keyboard.hide();
@@ -2687,7 +2697,7 @@ function PostScreen() {
       <div className="standard-page nav-padded">
         {step === 0 ? <PageTitle eyebrow="Share a small task" title="What do you need done?" subtitle="Search or browse the tasks neighbors already ask for. You will set the details, timing, and pay next." /> : null}
         <StepRail current={step} total={3} />
-        <span className="sr-only" role="status" aria-live="polite">Step {step + 1} of 4</span>
+        <p className="step-caption" role="status" aria-live="polite">Step {step + 1} of 4 · {["Choose a task", "Set the specifics", "Arrangement, timing & pay", "Review"][step]}</p>
         {step > 0 ? (
           <article className="chosen-task">
             <span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span>
@@ -2835,7 +2845,7 @@ function PostScreen() {
             <div className="fair-pay-card"><ShieldCheck size={22} weight="fill" /><div><strong>{mode === "community" ? "Clear time commitment" : `~$${hourlyEquivalent}/hour equivalent`}</strong><span>{mode === "sponsored" ? "Sponsor pays; recipient total is $0." : mode === "paid" ? `Helper earnings are shown before they accept. This task suggests $${listing.suggestedPay} for its scope; the prototype minimum is $15.` : "Scope and duration remain visible before a volunteer commits."}</span></div></div>
             {mode !== "community" ? <div className="fee-breakdown four-fees"><div><span>Helper receives</span><strong>${numericAmount}</strong></div><div><span>Platform</span><strong>${platformFee}</strong></div><div><span>Est. processing</span><strong>${processingFee}</strong></div><div><span>{mode === "sponsored" ? "Sponsor total" : "Requester total"}</span><strong>${numericAmount + platformFee + processingFee}</strong></div></div> : null}
             <button className="choice-row safety-confirm" aria-pressed={safetyConfirmed} data-selected={safetyConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setSafetyConfirmed((current) => !current); }}><span><strong>I reviewed safety and cancellation terms</strong><small>Changes, cancellations, and issues stay in the task thread.</small></span><span className="checkbox">{safetyConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
-            {!logisticsValid ? <p className="form-error" role="alert">Pick a start time and add a private address{mode === "community" ? "" : ", plus a helper amount of at least $15"}. Confirm the terms and keep participation access active.</p> : null}
+            {logisticsProblems.length ? <p className="form-error" role="alert">{logisticsProblems.length === 1 ? `${logisticsProblems[0][0].toUpperCase()}${logisticsProblems[0].slice(1)} to continue.` : `Still to do: ${logisticsProblems.slice(0, -1).join(", ")} and ${logisticsProblems[logisticsProblems.length - 1]}.`}</p> : null}
             <div className="form-actions"><button className="secondary-button" onClick={() => goStep(1)}>Back</button><button className="primary-button" disabled={!logisticsValid} onClick={() => goStep(3)}>Preview</button></div>
           </section>
         ) : null}
