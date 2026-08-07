@@ -730,11 +730,6 @@ export function composeListing(template: TaskTemplate, selections: Record<string
   };
 }
 
-/** Templates offered for a mode, most requested first. */
-export function templatesForMode(mode: TaskCatalogMode): TaskTemplate[] {
-  return templates.filter((template) => template.modes.includes(mode)).sort((a, b) => b.popularity - a.popularity);
-}
-
 /**
  * Client-side lookup over the loaded catalog: title, category, and the
  * authored keywords. No network call and no free-text passthrough — a query

@@ -6,7 +6,7 @@ Micro is a warm, trust-first mobile prototype for arranging small neighborhood t
 
 - Nearby discovery across Oakland and Alameda with search, a bounded approximate-area picker, filters, map/list coordination, and paid, Community Help, and Sponsored modes.
 - Detailed task scope, exclusions, completion criteria, requester trust, fair-pay totals, privacy-safe media, save, and report states.
-- A five-step posting flow built on a reviewed task catalog: pick an arrangement, choose one of 200 tasks, answer its bounded options, set time/place/pay, and review the composed listing.
+- A four-step posting flow that opens on the task catalog: find one of 200 reviewed tasks, answer its bounded options, set arrangement/time/place/pay, and review the composed listing.
 - Role-aware Activity journeys for start PINs, completion evidence, requester confirmation, simulated payout, cancellations, no-shows, support pauses, service hours, and structured reviews.
 - Protected task threads with immutable lifecycle records, local messaging, reporting, blocking, and review-only youth/guardian states.
 - Adult, youth, and guardian fixtures with task-specific approval, age/consent gates, persona-isolated records, and shared safety holds where roles overlap.
@@ -25,6 +25,8 @@ The latest review set uses `image-3` as clean visual inspiration and `image-1` /
 ## Task catalog
 
 Requesters do not write listings. `src/taskCatalog.ts` holds 200 reviewed tasks across 12 categories — yard & garden, home help, moving & hauling, cleaning, errands & pickup, pets & animals, tech help, senior support, events & setup, accessibility, school & learning, and community & mutual aid. Posting means picking an entry and answering a few bounded questions (yard size, number of boxes, stairs, distance, grade level, and so on); `composeListing()` turns that into the public title, description, inclusions, exclusions, completion check, duration, and suggested pay.
+
+Posting opens on the catalog rather than on an abstract question: neighbors know "my leaves need raking," not "I want a Paid task." The first screen is a search box over all 200 tasks, a most-requested shortlist, and a grid of all 12 categories with counts. Drilling into a category shows its safety boundary before any task is chosen. Because the task is picked first, the arrangement step can offer only the arrangements that are honest for it — a food-pantry shift never offers Paid, and its category boundary is already on screen.
 
 Because nothing is typed, nothing unreviewed can be published. Scope, safety boundaries, youth eligibility, and pay bands are authored per entry and inherited per category, so moderation is a property of the catalog rather than a keyword filter running after the fact. The private match address is the only free-text field in the flow, and it is never shown publicly.
 

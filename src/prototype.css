@@ -466,13 +466,19 @@
 .catalog-search { display: flex; align-items: center; gap: 9px; min-height: 52px; padding: 0 13px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; color: var(--micro-ink-soft); }
 .catalog-search input { min-width: 0; flex: 1; height: 50px; border: 0; outline: 0; background: transparent; color: var(--micro-ink); font-size: 16px; font-weight: 500; }
 .catalog-search-clear { display: grid; width: 26px; height: 26px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; background: var(--micro-paper-deep); color: var(--micro-ink-soft); }
-.catalog-category-rail { margin: 0 -18px; }
-.catalog-category-track { gap: 8px; padding: 2px 18px; }
-.catalog-category { display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 13px; border: 1px solid var(--micro-line); border-radius: 19px; background: #fffdfa; color: var(--micro-ink-soft); white-space: nowrap; font-size: 13px; font-weight: 700; }
-.catalog-category span { color: #93a2b3; font-size: 11px; font-weight: 800; }
-.catalog-category[data-active="true"] { border-color: var(--micro-teal); background: var(--micro-green-soft); color: var(--micro-teal-dark); }
-.catalog-category[data-active="true"] span { color: var(--micro-teal); }
-.catalog-count { margin: 0; color: var(--micro-ink-soft); font-size: 12px; font-weight: 700; }
+.catalog-block-label { margin: 8px 0 -2px; color: var(--micro-ink-soft); font-size: 12px; font-weight: 850; letter-spacing: 0.05em; text-transform: uppercase; }
+.category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.category-tile { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; min-height: 66px; padding: 11px 12px; border: 1px solid var(--micro-line); border-radius: 15px; background: #fffdfa; color: var(--micro-ink); text-align: left; }
+.category-tile-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 12px; background: var(--micro-paper-deep); color: var(--micro-teal); }
+.category-tile-body { display: grid; gap: 2px; }
+.category-tile-body strong { font-size: 13px; line-height: 1.18; }
+.category-tile-body small { color: var(--micro-ink-soft); font-size: 11px; }
+.catalog-crumb { display: inline-flex; min-height: 44px; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--micro-teal-dark); font-size: 14px; font-weight: 800; }
+.catalog-category-head { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 11px; }
+.catalog-category-head strong { display: block; font-family: var(--micro-display); font-size: 21px; line-height: 1.15; }
+.catalog-category-head small { display: block; margin-top: 3px; color: var(--micro-ink-soft); font-size: 12px; }
+.boundary-note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px; border: 1px solid #d6e5df; border-radius: 14px; background: #eef6f2; color: #36574f; font-size: 12px; line-height: 1.4; }
+.boundary-note svg { flex: 0 0 auto; color: var(--micro-teal); }
 .catalog-results { display: grid; gap: 8px; }
 .catalog-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 11px; width: 100%; min-height: 66px; padding: 11px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: #fffdfa; color: var(--micro-ink); text-align: left; }
 .catalog-row[data-selected="true"] { border-color: var(--micro-teal); background: var(--micro-green-soft); }
@@ -483,8 +489,6 @@
 .catalog-row-body small { color: var(--micro-ink-soft); font-size: 11px; }
 .catalog-row-flag { padding: 3px 7px; border-radius: 8px; background: #e8f1fc; color: var(--micro-blue); white-space: nowrap; font-size: 10px; font-weight: 800; }
 .catalog-empty { padding: 26px 18px; }
-.catalog-selected-note { margin: 2px 0 -4px; color: var(--micro-ink-soft); font-size: 12px; }
-.catalog-selected-note strong { color: var(--micro-ink); }
 .section-label-value { color: var(--micro-teal-dark); }
 
 /* Chosen task, composed listing, and catalog-derived facts — step 3. */
@@ -599,7 +603,8 @@
 .fee-breakdown span { min-height: 26px; color: #5f6979; font-size: 10px; }
 .fee-breakdown strong { margin-top: 3px; color: var(--micro-teal-dark); font-size: 18px; }
 .compact-choice-fieldset .segmented-row button { padding: 0 4px; font-size: 11px; }
-.form-step-heading { margin: 2px 0 14px; scroll-margin-top: 78px; font-family: var(--micro-display); font-size: 26px; outline: 0; }
+/* Clears the status bar plus the chosen-task strip that sits above the heading. */
+.form-step-heading { margin: 2px 0 14px; scroll-margin-top: 152px; font-family: var(--micro-display); font-size: 26px; outline: 0; }
 .form-step-heading:focus-visible { border-radius: 8px; box-shadow: 0 0 0 3px rgba(7, 132, 119, 0.22); }
 .discard-draft { width: 100%; color: #6f566d; }
 .completion-definition { display: flex; align-items: flex-start; gap: 9px; margin-top: 13px; padding: 12px; border-radius: 14px; background: #e9f4ef; color: var(--micro-teal-dark); }
@@ -1147,6 +1152,31 @@
   background: #fff;
   box-shadow: 0 6px 16px rgba(22, 51, 75, 0.18);
 }
+
+/* Zoomed out, markers shrink so four of them do not swallow the map; the
+   selected one stays large enough to read at any zoom. */
+.map-marker[data-size="compact"] > .map-avatar-bubble {
+  width: 28px;
+  height: 28px;
+  padding: 1px;
+  border-width: 2px;
+}
+
+.map-marker[data-size="regular"] > .map-avatar-bubble {
+  width: 36px;
+  height: 36px;
+  padding: 2px;
+  border-width: 2px;
+}
+
+.map-marker[data-size="compact"] > .map-pin-label,
+.map-marker[data-size="regular"] > .map-pin-label { top: 34px; }
+
+.map-marker[data-size="compact"] .map-mode-dot,
+.map-marker[data-size="regular"] .map-mode-dot { width: 10px; height: 10px; border-width: 2px; }
+
+.map-marker[data-active="true"][data-size="compact"] > .map-avatar-bubble { width: 40px; height: 40px; border-width: 3px; }
+.map-marker[data-active="true"][data-size="regular"] > .map-avatar-bubble { width: 46px; height: 46px; border-width: 3px; }
 
 .map-marker[data-active="true"] > .map-avatar-bubble {
   width: 52px;

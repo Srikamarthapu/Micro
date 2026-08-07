@@ -54,12 +54,12 @@ import {
 } from "./mobile";
 import {
   catalogCategories,
+  categoryById,
   composeListing,
   defaultSelections,
   searchTemplates,
   taskTemplates,
   templateById,
-  templatesForMode,
   type TaskTemplate,
 } from "./taskCatalog";
 
@@ -954,7 +954,12 @@ function taskAvatar(task: Task, profilePhotos: Record<Persona, string>) {
   return task.ownerPersona ? profilePhotos[task.ownerPersona] || detail.avatar : detail.avatar;
 }
 
+const markerFullSizeZoom = 15;
+
 function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void }) {
+  const [zoom, setZoom] = useState(area.zoom);
+  useEffect(() => setZoom(area.zoom), [area]);
+  const markerSize = zoom >= markerFullSizeZoom ? "full" : zoom >= markerFullSizeZoom - 2 ? "regular" : "compact";
   return (
     <APIProvider apiKey={mapsApiKey}>
       <MapStatusWatch onUnavailable={onUnavailable} />
@@ -970,14 +975,15 @@ function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable }: { are
         disableDefaultUI
         clickableIcons={false}
         reuseMaps
+        onZoomChanged={(event) => setZoom(event.detail.zoom)}
       >
         {tasks.map((task) => (
-          <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} onSelect={onSelect} />
+          <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} size={markerSize} onSelect={onSelect} />
         ))}
       </GoogleMap>
       <MapAreaSync area={area} />
       <MapHealthCheck onUnavailable={onUnavailable} />
-      <MapZoomControls area={area} />
+      <MapZoomControls area={area} zoom={zoom} />
     </APIProvider>
   );
 }
@@ -1032,25 +1038,18 @@ function MapAreaSync({ area }: { area: MicroArea }) {
 }
 
 // Google's own controls are hidden so zoom matches the phone-frame styling.
-function MapZoomControls({ area }: { area: MicroArea }) {
+function MapZoomControls({ area, zoom }: { area: MicroArea; zoom: number }) {
   const map = useMap();
-  const [zoom, setZoom] = useState(area.zoom);
-  useEffect(() => {
-    if (!map) return;
-    setZoom(map.getZoom() ?? area.zoom);
-    const listener = map.addListener("zoom_changed", () => setZoom(map.getZoom() ?? area.zoom));
-    return () => listener.remove();
-  }, [map, area]);
   const step = (delta: number) => map?.setZoom((map.getZoom() ?? area.zoom) + delta);
   return (
-    <div className="map-zoom-controls">
+    <div className="map-zoom-controls" data-zoom={zoom}>
       <button aria-label="Zoom in" disabled={zoom >= area.maxZoom} onClick={() => step(1)}><Plus size={17} weight="bold" aria-hidden="true" /></button>
       <button aria-label="Zoom out" disabled={zoom <= area.minZoom} onClick={() => step(-1)}><Minus size={17} weight="bold" aria-hidden="true" /></button>
     </div>
   );
 }
 
-function MapTaskPin({ task, active, onSelect }: { task: Task; active: boolean; onSelect: (id: string) => void }) {
+function MapTaskPin({ task, active, size, onSelect }: { task: Task; active: boolean; size: "compact" | "regular" | "full"; onSelect: (id: string) => void }) {
   const { profilePhotos } = useMicro();
   const detail = getTaskDetails(task);
   const labelValue = task.earning ? `$${task.earning}` : "Volunteer";
@@ -1065,6 +1064,7 @@ function MapTaskPin({ task, active, onSelect }: { task: Task; active: boolean; o
       <span
         className="map-marker"
         data-mode={task.mode}
+        data-size={size}
         data-active={active ? "true" : "false"}
         role="button"
         aria-label={`${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
@@ -1286,7 +1286,7 @@ function PostScreen() {
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
-  const [browseCategoryId, setBrowseCategoryId] = useState("all");
+  const [openCategoryId, setOpenCategoryId] = useState<string | null>(null);
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedTimeRef = useRef<HTMLButtonElement>(null);
   const { mode, templateId, selections, dateChoice, startTime, privateAddress, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
@@ -1298,28 +1298,32 @@ function PostScreen() {
   // Every published word comes from here: the requester picks a catalog task and
   // answers its bounded options, and the listing is composed from that.
   const listing = useMemo(() => composeListing(template, selections), [selections, template]);
-  const modePool = useMemo(() => templatesForMode(mode), [mode]);
+  const openCategory = openCategoryId ? categoryById(openCategoryId) : undefined;
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const entry of modePool) counts[entry.categoryId] = (counts[entry.categoryId] ?? 0) + 1;
+    for (const entry of taskTemplates) counts[entry.categoryId] = (counts[entry.categoryId] ?? 0) + 1;
     return counts;
-  }, [modePool]);
-  const results = useMemo(() => searchTemplates(browseCategoryId === "all" ? modePool : modePool.filter((entry) => entry.categoryId === browseCategoryId), catalogQuery), [browseCategoryId, catalogQuery, modePool]);
+  }, []);
+  const mostRequested = useMemo(() => [...taskTemplates].sort((a, b) => b.popularity - a.popularity).slice(0, 6), []);
+  const categoryTasks = useMemo(() => taskTemplates.filter((entry) => entry.categoryId === openCategoryId).sort((a, b) => b.popularity - a.popularity), [openCategoryId]);
+  const searchResults = useMemo(() => (catalogQuery.trim() ? searchTemplates([...taskTemplates].sort((a, b) => b.popularity - a.popularity), catalogQuery) : []), [catalogQuery]);
+  // The task decides which arrangements are honest for it: a food-pantry shift is
+  // never a paid job, and a paid yard task is never billed to a sponsor by default.
+  const availableModes = template.modes as TaskMode[];
 
-  const setMode = (value: TaskMode) => setPostDraft((current) => {
-    const held = templateById(current.templateId);
-    if (held?.modes.includes(value)) return { ...current, mode: value };
-    // The held task is not offered in the new mode, so fall back to that mode's
-    // most requested task rather than carrying an unavailable listing forward.
-    const replacement = templatesForMode(value)[0];
-    const nextSelections = defaultSelections(replacement);
-    return { ...current, mode: value, templateId: replacement.id, selections: nextSelections, amount: String(composeListing(replacement, nextSelections).suggestedPay), riskConfirmed: false };
-  });
+  const setMode = (value: TaskMode) => setField("mode", value);
   const selectTemplate = (next: TaskTemplate) => {
     keyboard.hide();
     const nextSelections = defaultSelections(next);
-    setPostDraft((current) => ({ ...current, templateId: next.id, selections: nextSelections, amount: String(composeListing(next, nextSelections).suggestedPay), riskConfirmed: false }));
-    setStep(2);
+    setPostDraft((current) => ({
+      ...current,
+      templateId: next.id,
+      selections: nextSelections,
+      mode: next.modes.includes(current.mode) ? current.mode : (next.modes[0] as TaskMode),
+      amount: String(composeListing(next, nextSelections).suggestedPay),
+      riskConfirmed: false,
+    }));
+    setStep(1);
   };
   const setChoice = (optionId: string, choiceId: string) => {
     keyboard.hide();
@@ -1345,6 +1349,7 @@ function PostScreen() {
   const scopeValid = riskConfirmed && (!photoPreview || photoAcknowledged);
   const logisticsValid = startTimeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady;
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
+  const backToCatalog = () => { keyboard.hide(); setOpenCategoryId(template.categoryId); setStep(0); };
 
   useEffect(() => {
     if (step === 0 || published) return;
@@ -1357,7 +1362,7 @@ function PostScreen() {
   // The rail holds a full day of slots, so bring the chosen one into view rather
   // than leaving the requester looking at 7:00 AM.
   useEffect(() => {
-    if (step !== 3) return;
+    if (step !== 2) return;
     requestAnimationFrame(() => selectedTimeRef.current?.scrollIntoView({ block: "nearest", inline: "center" }));
   }, [step]);
 
@@ -1397,6 +1402,22 @@ function PostScreen() {
     setPublished(true);
   };
 
+  const taskRow = (entry: TaskTemplate) => {
+    const RowIcon = entry.icon;
+    const pay = entry.modes.includes("paid") ? `typically $${Math.max(15, entry.pay)}` : entry.modes.includes("sponsored") ? "volunteer or sponsored" : "volunteer";
+    return (
+      <button key={entry.id} className="catalog-row" data-selected={entry.id === templateId ? "true" : "false"} onClick={() => selectTemplate(entry)}>
+        <span className="catalog-row-icon"><RowIcon size={21} weight="duotone" /></span>
+        <span className="catalog-row-body">
+          <strong>{entry.title}</strong>
+          <small>about {entry.minutes} min · {pay}</small>
+        </span>
+        {entry.youthEligible ? <span className="catalog-row-flag">Youth OK</span> : null}
+        <ArrowRight size={16} weight="bold" />
+      </button>
+    );
+  };
+
   if (!participationReady) {
     return <MobileScroll className="app-screen tab-scroll"><div className="standard-page nav-padded"><PageTitle eyebrow="Participation check" title="Posting is paused." subtitle="Micro keeps the draft safe while participation requirements are incomplete." /><div className="empty-state participation-gate"><ShieldCheck size={36} weight="duotone" /><h2>{persona === "youth" && youthAge < 15 ? "Youth Mode begins at age 15." : persona === "youth" && !guardianLinked ? "Link a guardian first." : "Accept the test terms first."}</h2><p>Update the local age, terms, or guardian fixture in Profile. No draft fields were discarded.</p><button className="primary-button" onClick={() => setActiveTab("profile")}>Open Profile</button></div></div></MobileScroll>;
   }
@@ -1412,7 +1433,7 @@ function PostScreen() {
             <p>It is visible around {profileArea} with an approximate public location.</p>
             <div className="truth-card"><Info size={22} /><div><strong>Prototype only</strong><span>No payment, private address, or live notification was created.</span></div></div>
             <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} />
-            <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { setPostDraft(initialPostDraft); setPublished(false); setStep(0); }}>Post another task</button></div>
+            <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { setPostDraft(initialPostDraft); setPublished(false); setStep(0); setOpenCategoryId(null); setCatalogQuery(""); }}>Post another task</button></div>
           </section>
         </div>
       </MobileScroll>
@@ -1422,81 +1443,72 @@ function PostScreen() {
   return (
     <MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded">
-        <PageTitle eyebrow="Share a small task" title="What kind of help fits?" subtitle="Choose the arrangement first. Micro keeps the same dignity and clarity in every mode." />
-        <StepRail current={step} total={4} />
-        <span className="sr-only" role="status" aria-live="polite">Step {step + 1} of 5</span>
-        {step > 0 ? <div className="post-mode-strip" data-mode={mode}><span className="mode-badge">{mode === "community" ? <HandHeart size={14} weight="fill" /> : mode === "sponsored" ? <Sparkle size={14} weight="fill" /> : <Tag size={14} weight="fill" />} {modeMeta[mode].label}</span><button className="text-button" onClick={() => goStep(0)}>Change</button></div> : null}
+        {step === 0 ? <PageTitle eyebrow="Share a small task" title="What do you need done?" subtitle="Search or browse the tasks neighbors already ask for. You will set the details, timing, and pay next." /> : null}
+        <StepRail current={step} total={3} />
+        <span className="sr-only" role="status" aria-live="polite">Step {step + 1} of 4</span>
+        {step > 0 ? (
+          <article className="chosen-task">
+            <span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span>
+            <div><strong>{template.title}</strong><small>{template.category}</small></div>
+            <button className="text-button" onClick={backToCatalog}>Change</button>
+          </article>
+        ) : null}
         {!accessTermsAccepted ? <div className="test-mode-banner"><Warning size={19} /><span><strong>Participation paused:</strong> accept the test terms in Profile before publishing.</span></div> : null}
 
         {step === 0 ? (
-          <section className="mode-choice-list">
-            {(["paid", "community", "sponsored"] as TaskMode[]).map((value) => {
-              const meta = modeMeta[value];
-              const ModeIcon = meta.icon;
-              return (
-                <button key={value} className="mode-choice" aria-pressed={mode === value} data-mode={value} data-selected={mode === value ? "true" : "false"} onClick={() => { keyboard.hide(); setMode(value); }}>
-                  <span className="mode-choice-icon"><ModeIcon size={25} weight="fill" /></span>
-                  <span><strong>{meta.label}</strong><small>{value === "paid" ? "You fund fair, clearly scoped help." : value === "community" ? "Ask for or offer time with no payment." : "A sponsor funds the helper; recipient pays $0."}</small></span>
-                  <span className="radio-mark">{mode === value ? <Check size={15} weight="bold" /> : null}</span>
-                </button>
-              );
-            })}
-            <button className="primary-button" onClick={() => goStep(1)}>Choose a task <ArrowRight size={18} /></button>
-            {draftChanged ? <button className="text-button discard-draft" onClick={() => { keyboard.hide(); setPostDraft(initialPostDraft); setStep(0); }}>Discard changes &amp; restore example</button> : null}
+          <section className="form-section catalog-section">
+            <div className="catalog-search"><MagnifyingGlass size={19} /><KeyboardInput value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onBlur={() => keyboard.hide()} placeholder={`Search ${taskTemplates.length} tasks`} aria-label="Search the task catalog" />{catalogQuery ? <button className="catalog-search-clear" aria-label="Clear search" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}><X size={15} weight="bold" /></button> : null}</div>
+
+            {catalogQuery.trim() ? (
+              searchResults.length ? (
+                <>
+                  <p className="catalog-block-label">{searchResults.length} {searchResults.length === 1 ? "match" : "matches"} for “{catalogQuery.trim()}”</p>
+                  <div className="catalog-results">{searchResults.map(taskRow)}</div>
+                </>
+              ) : (
+                <div className="empty-state catalog-empty">
+                  <MagnifyingGlass size={28} aria-hidden="true" />
+                  <h2>Nothing matches “{catalogQuery.trim()}”</h2>
+                  <p>Micro only publishes tasks that have been reviewed for scope and safety, so there is nothing to write in by hand. Try a plainer word — “leaves”, “boxes”, “dog” — or browse the categories.</p>
+                  <button className="text-button" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}>Browse categories instead</button>
+                </div>
+              )
+            ) : openCategory ? (
+              <>
+                <button className="catalog-crumb" onClick={() => { keyboard.hide(); setOpenCategoryId(null); }}><CaretLeft size={15} weight="bold" /> All categories</button>
+                <div className="catalog-category-head">
+                  <span className="category-tile-icon">{(() => { const HeadIcon = openCategory.icon; return <HeadIcon size={22} weight="duotone" />; })()}</span>
+                  <div><strong>{openCategory.label}</strong><small>{categoryTasks.length} tasks · {openCategory.blurb}</small></div>
+                </div>
+                <div className="boundary-note"><ShieldCheck size={20} weight="fill" /><span>{openCategory.boundary}</span></div>
+                <div className="catalog-results">{categoryTasks.map(taskRow)}</div>
+              </>
+            ) : (
+              <>
+                <p className="catalog-block-label">Most requested</p>
+                <div className="catalog-results">{mostRequested.map(taskRow)}</div>
+                <p className="catalog-block-label">Browse every category</p>
+                <div className="category-grid">
+                  {catalogCategories.map((entry) => {
+                    const CategoryIcon = entry.icon;
+                    return (
+                      <button key={entry.id} className="category-tile" onClick={() => { keyboard.hide(); setOpenCategoryId(entry.id); }}>
+                        <span className="category-tile-icon"><CategoryIcon size={21} weight="duotone" /></span>
+                        <span className="category-tile-body"><strong>{entry.label}</strong><small>{categoryCounts[entry.id]} tasks</small></span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {draftChanged ? <button className="text-button discard-draft" onClick={() => { keyboard.hide(); setPostDraft(initialPostDraft); setOpenCategoryId(null); }}>Discard changes &amp; restore example</button> : null}
+              </>
+            )}
           </section>
         ) : null}
 
         {step === 1 ? (
-          <section className="form-section catalog-section">
-            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Choose the task</h2>
-            <p className="catalog-intro">Micro lists reviewed neighborhood tasks only. Pick the closest match and you will set the specifics next.</p>
-            <div className="catalog-search"><MagnifyingGlass size={19} /><KeyboardInput value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onBlur={() => keyboard.hide()} placeholder={`Search ${modePool.length} tasks`} aria-label="Search the task catalog" />{catalogQuery ? <button className="catalog-search-clear" aria-label="Clear search" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}><X size={15} weight="bold" /></button> : null}</div>
-            <Carousel ariaLabel="Task categories" className="catalog-category-rail" contentClassName="catalog-category-track">
-              <button className="catalog-category" aria-pressed={browseCategoryId === "all"} data-active={browseCategoryId === "all" ? "true" : "false"} onClick={() => setBrowseCategoryId("all")}>All <span>{modePool.length}</span></button>
-              {catalogCategories.filter((entry) => categoryCounts[entry.id]).map((entry) => {
-                const CategoryIcon = entry.icon;
-                return <button key={entry.id} className="catalog-category" aria-pressed={browseCategoryId === entry.id} data-active={browseCategoryId === entry.id ? "true" : "false"} onClick={() => setBrowseCategoryId(entry.id)}><CategoryIcon size={16} weight="fill" /> {entry.label} <span>{categoryCounts[entry.id]}</span></button>;
-              })}
-            </Carousel>
-            <p className="catalog-count">{results.length} {results.length === 1 ? "task" : "tasks"}{browseCategoryId === "all" && !catalogQuery ? " · most requested first" : ""}</p>
-            {results.length ? (
-              <div className="catalog-results">
-                {results.map((entry) => {
-                  const RowIcon = entry.icon;
-                  return (
-                    <button key={entry.id} className="catalog-row" data-selected={entry.id === templateId ? "true" : "false"} onClick={() => selectTemplate(entry)}>
-                      <span className="catalog-row-icon"><RowIcon size={21} weight="duotone" /></span>
-                      <span className="catalog-row-body">
-                        <strong>{entry.title}</strong>
-                        <small>{entry.category} · about {entry.minutes} min{mode === "community" ? "" : ` · from $${Math.max(15, entry.pay)}`}</small>
-                      </span>
-                      {entry.youthEligible ? <span className="catalog-row-flag">Youth OK</span> : null}
-                      <ArrowRight size={16} weight="bold" />
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="empty-state catalog-empty">
-                <MagnifyingGlass size={28} aria-hidden="true" />
-                <h2>No task matches that</h2>
-                <p>Micro only publishes tasks that have been reviewed for scope and safety, so there is nothing to write in by hand. Try another word, or browse a category.</p>
-                <button className="text-button" onClick={() => { keyboard.hide(); setCatalogQuery(""); setBrowseCategoryId("all"); }}>Clear search</button>
-              </div>
-            )}
-            <p className="catalog-selected-note">Selected: <strong>{template.title}</strong></p>
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(0)}>Back</button><button className="primary-button" onClick={() => goStep(2)}>Continue <ArrowRight size={18} /></button></div>
-          </section>
-        ) : null}
-
-        {step === 2 ? (
           <section className="form-section">
             <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set the specifics</h2>
-            <article className="chosen-task">
-              <span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span>
-              <div><strong>{template.title}</strong><small>{template.category}</small></div>
-              <button className="text-button" onClick={() => goStep(1)}>Change</button>
-            </article>
+            <p className="catalog-intro">Answer a few questions and Micro writes the listing for you.</p>
             {template.options.length ? template.options.map((control) => (
               <fieldset key={control.id} className="choice-fieldset compact-choice-fieldset">
                 <legend>{control.label}</legend>
@@ -1509,18 +1521,37 @@ function PostScreen() {
               <p>{listing.details}</p>
               <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /></div>
             </section>
-            <div className="derived-facts"><div><span>Suggested duration</span><strong>{listing.duration}</strong></div>{mode !== "community" ? <div><span>Suggested pay</span><strong>${listing.suggestedPay}</strong></div> : <div><span>Compensation</span><strong>Volunteer</strong></div>}</div>
+            <div className="derived-facts"><div><span>Suggested duration</span><strong>{listing.duration}</strong></div><div><span>Suggested pay</span><strong>${listing.suggestedPay}</strong></div></div>
             <button className="choice-row risk-confirm" aria-pressed={riskConfirmed} data-selected={riskConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setRiskConfirmed((current) => !current); }}><span><strong>{template.category} safety boundary</strong><small>{template.boundary}</small></span><span className="checkbox">{riskConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
             <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
             <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> Photos are optional. The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button>
             {!scopeValid ? <p className="form-error" role="alert">{!riskConfirmed ? "Confirm the safety boundary for this task before continuing." : "Review the photo privacy guidance before continuing with this image."}</p> : null}
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(1)}>Back</button><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(3)}>Set time &amp; pay</button></div>
+            <div className="form-actions"><button className="secondary-button" onClick={backToCatalog}>Back</button><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(2)}>Timing &amp; pay</button></div>
           </section>
         ) : null}
 
-        {step === 3 ? (
+        {step === 2 ? (
           <section className="form-section">
-            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set time, place, and pay</h2>
+            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Arrangement, timing, and pay</h2>
+            <p className="catalog-intro">Choose how this is arranged, when it happens, and what the helper receives.</p>
+            <div className="section-label">How is this arranged?</div>
+            {availableModes.length > 1 ? (
+              <div className="mode-choice-list">
+                {availableModes.map((value) => {
+                  const meta = modeMeta[value];
+                  const ModeIcon = meta.icon;
+                  return (
+                    <button key={value} className="mode-choice" aria-pressed={mode === value} data-mode={value} data-selected={mode === value ? "true" : "false"} onClick={() => { keyboard.hide(); setMode(value); }}>
+                      <span className="mode-choice-icon"><ModeIcon size={25} weight="fill" /></span>
+                      <span><strong>{meta.label}</strong><small>{value === "paid" ? "You pay the helper a fair, agreed amount." : value === "community" ? "No money changes hands." : "A sponsor pays the helper; you pay $0."}</small></span>
+                      <span className="radio-mark">{mode === value ? <Check size={15} weight="bold" /> : null}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="notice-card"><HandHeart size={22} /><div><strong>{modeMeta[availableModes[0]].label} only</strong><span>This task is offered as {modeMeta[availableModes[0]].label.toLowerCase()}, so there is nothing to choose here.</span></div></div>
+            )}
             <div className="section-label">When</div>
             <div className="segmented-row">{(["Tomorrow", "Saturday", "Flexible"] as const).map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setDateChoice(value); }}>{value}</button>)}</div>
             <div className="section-label">Start time · <span className="section-label-value">{startTime}</span></div>
@@ -1535,11 +1566,11 @@ function PostScreen() {
             {mode !== "community" ? <div className="fee-breakdown four-fees"><div><span>Helper receives</span><strong>${numericAmount}</strong></div><div><span>Platform</span><strong>${platformFee}</strong></div><div><span>Est. processing</span><strong>${processingFee}</strong></div><div><span>{mode === "sponsored" ? "Sponsor total" : "Requester total"}</span><strong>${numericAmount + platformFee + processingFee}</strong></div></div> : null}
             <button className="choice-row safety-confirm" aria-pressed={safetyConfirmed} data-selected={safetyConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setSafetyConfirmed((current) => !current); }}><span><strong>I reviewed safety and cancellation terms</strong><small>Changes, cancellations, and issues stay in the task thread.</small></span><span className="checkbox">{safetyConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
             {!logisticsValid ? <p className="form-error" role="alert">Pick a start time and add a private address{mode === "community" ? "" : ", plus a helper amount of at least $15"}. Confirm the terms and keep participation access active.</p> : null}
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Back</button><button className="primary-button" disabled={!logisticsValid} onClick={() => goStep(4)}>Preview</button></div>
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(1)}>Back</button><button className="primary-button" disabled={!logisticsValid} onClick={() => goStep(3)}>Preview</button></div>
           </section>
         ) : null}
 
-        {step === 4 ? (
+        {step === 3 ? (
           <section className="form-section">
             <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Review the public listing</h2>
             <p className="eyebrow">Public preview</p>
@@ -1548,7 +1579,7 @@ function PostScreen() {
             <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
             <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea}</strong><small>{modeMeta[mode].label} · {template.category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{template.youthEligible ? "Adults and Youth Mode helpers" : "Adults only"}</strong><small>Set by the task you picked, not by the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
             <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(3)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid} onClick={publish}>Publish task</button></div>
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid} onClick={publish}>Publish task</button></div>
           </section>
         ) : null}
       </div>
