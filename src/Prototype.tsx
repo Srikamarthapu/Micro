@@ -253,7 +253,8 @@ type PostDraft = {
   customCategoryId: string;
   customMinutes: number;
   customCompletionId: string;
-  dateChoice: "Tomorrow" | "Saturday" | "Flexible";
+  /** One of `dateChoicesFor(now)` — derived from the date, not a fixed enum. */
+  dateChoice: string;
   startTime: string;
   privateAddress: string;
   amount: string;
@@ -318,6 +319,35 @@ type PersonaSessionState = {
 
 /** Half-hour slots a task may start in. Bounded so no start time is free-typed. */
 const startTimeSlots = ["7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM", "9:30 AM", "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM", "12:00 PM", "12:30 PM", "1:00 PM", "1:30 PM", "2:00 PM", "2:30 PM", "3:00 PM", "3:30 PM", "4:00 PM", "4:30 PM", "5:00 PM", "5:30 PM", "6:00 PM", "6:30 PM", "7:00 PM"];
+
+/** Shortest notice a neighbor is asked to accept, in minutes. */
+const sameDayLeadMinutes = 60;
+const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** "10:30 AM" -> minutes since midnight. */
+function slotMinutes(slot: string): number {
+  const parts = slot.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!parts) return 0;
+  return ((Number(parts[1]) % 12) + (/pm/i.test(parts[3]) ? 12 : 0)) * 60 + Number(parts[2]);
+}
+
+/** Slots still far enough out to be worth asking for today. */
+function slotsRemainingToday(now: Date): string[] {
+  const cutoff = now.getHours() * 60 + now.getMinutes() + sameDayLeadMinutes;
+  return startTimeSlots.filter((slot) => slotMinutes(slot) >= cutoff);
+}
+
+/**
+ * The "when" options, derived from the clock rather than hardcoded. Today drops
+ * out once it is too late in the day to give anyone reasonable notice, and the
+ * third option is a real weekday two days out so it can never collide with
+ * Today or Tomorrow the way a fixed "Saturday" did.
+ */
+function dateChoicesFor(now: Date): string[] {
+  const later = new Date(now);
+  later.setDate(later.getDate() + 2);
+  return [...(slotsRemainingToday(now).length ? ["Today"] : []), "Tomorrow", weekdayNames[later.getDay()], "Flexible"];
+}
 
 const exampleTemplate = templateById("yard-lavender") ?? taskTemplates[0];
 const exampleSelections = defaultSelections(exampleTemplate);
@@ -1301,7 +1331,7 @@ function AuthAccountErrorScreen() {
   return (
     <MobileScroll className="auth-experience auth-scroll">
       <main className="auth-state-screen">
-        <div className="auth-brand-lockup"><span className="auth-wordmark">Micro</span><span>helping nearby</span></div>
+        <div className="auth-brand-lockup"><img className="brand-mark" src="/assets/micro/micro-mark.png" alt="" draggable={false} /><span className="auth-wordmark">Micro</span><span>helping nearby</span></div>
         <section className="auth-state-card" role="alert">
           <span className="auth-state-icon warning"><Warning size={30} weight="duotone" /></span>
           <p className="eyebrow">Account setup</p>
@@ -1321,7 +1351,7 @@ function AuthWelcomeScreen() {
   return (
     <MobileScroll className="auth-experience auth-scroll">
       <main className="auth-welcome" data-testid="auth-welcome">
-        <header className="auth-brand-lockup"><span className="auth-wordmark">Micro</span><span>helping nearby</span></header>
+        <header className="auth-brand-lockup"><img className="brand-mark" src="/assets/micro/micro-mark.png" alt="" draggable={false} /><span className="auth-wordmark">Micro</span><span>helping nearby</span></header>
         <section className="auth-welcome-copy">
           <h1>Small tasks.<br />Real neighbors.</h1>
           <p>Post clearly scoped help, or lend a hand nearby.</p>
@@ -2063,15 +2093,30 @@ function MapStatusWatch({ onUnavailable }: { onUnavailable: (reason: string) => 
 }
 
 // Backstop for the case Google logs an error without invoking gm_authFailure:
-// a working map always paints a .gm-style subtree into its container.
+// a working map always paints a .gm-style subtree into its container. This
+// cannot tell a disabled API from a rejected referrer or an exhausted quota, so
+// it must not name a cause — Google prints the real one to the console.
 function MapHealthCheck({ onUnavailable }: { onUnavailable: (reason: string) => void }) {
   const map = useMap();
   useEffect(() => {
     if (!map) return;
-    const timer = setTimeout(() => {
-      if (!map.getDiv()?.querySelector(".gm-style")) onUnavailable("Maps JavaScript API is not enabled");
-    }, 3500);
-    return () => clearTimeout(timer);
+    let settled = false;
+    const painted = () => Boolean(map.getDiv()?.querySelector(".gm-style"));
+    // Poll rather than judging once: a cold load can paint well after a fixed
+    // deadline, and a verdict that never clears reports a working map as broken.
+    const poll = setInterval(() => {
+      if (settled || !painted()) return;
+      settled = true;
+      clearInterval(poll);
+      onUnavailable("");
+    }, 400);
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      if (!painted()) onUnavailable("Map could not load · see console");
+    }, 8000);
+    return () => { clearInterval(poll); clearTimeout(deadline); };
   }, [map, onUnavailable]);
   return null;
 }
@@ -2425,7 +2470,7 @@ function PostScreen() {
       return { ...current, selections: nextSelections, amount: String(composeListing(template, nextSelections).suggestedPay) };
     });
   };
-  const setDateChoice = (value: PostDraft["dateChoice"]) => setField("dateChoice", value);
+  const setDateChoice = (value: string) => { keyboard.hide(); setField("dateChoice", value); };
   const setStartTime = (value: string) => { keyboard.hide(); setField("startTime", value); };
   const setPrivateAddress = (value: string) => setField("privateAddress", value);
   const setAmount = (value: string) => setField("amount", value);
@@ -2437,12 +2482,16 @@ function PostScreen() {
   const platformFee = mode === "community" ? 0 : Math.max(2, Math.round(numericAmount * 0.05));
   const processingFee = mode === "community" ? 0 : Math.max(1, Math.round(numericAmount * 0.03));
   const hourlyEquivalent = Math.round((numericAmount * 60) / listing.minutes);
+  // Recomputed on step change so the clock cannot go stale mid-draft.
+  const now = useMemo(() => new Date(), [step]);
+  const dateChoices = useMemo(() => dateChoicesFor(now), [now]);
+  const timeSlots = useMemo(() => (dateChoice === "Today" ? slotsRemainingToday(now) : startTimeSlots), [dateChoice, now]);
   const accountCanPost = auth.demoMode || auth.capabilities.can_post_tasks;
   const participationReady = accountCanPost && accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
   const sponsoredPostingAllowed = auth.demoMode || auth.canSponsor;
   const draftChanged = JSON.stringify(postDraft) !== JSON.stringify(initialPostDraft);
   const scopeValid = riskConfirmed && (!photoPreview || photoAcknowledged);
-  const logisticsValid = startTimeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady && (mode !== "sponsored" || sponsoredPostingAllowed);
+  const logisticsValid = timeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady && (mode !== "sponsored" || sponsoredPostingAllowed);
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
   const backToCatalog = () => {
     keyboard.hide();
@@ -2457,6 +2506,13 @@ function PostScreen() {
       stepHeadingRef.current?.scrollIntoView({ block: "start" });
     });
   }, [published, step]);
+
+  // A draft can outlive the day it was written on, and Today loses slots as the
+  // afternoon wears on, so pull both fields back into the current options.
+  useEffect(() => {
+    if (!dateChoices.includes(dateChoice)) setField("dateChoice", "Tomorrow");
+    else if (timeSlots.length && !timeSlots.includes(startTime)) setField("startTime", timeSlots[0]);
+  }, [dateChoice, dateChoices, startTime, timeSlots]);
 
   // The rail holds a full day of slots, so bring the chosen one into view rather
   // than leaving the requester looking at 7:00 AM.
@@ -2681,10 +2737,10 @@ function PostScreen() {
               <div className="notice-card"><HandHeart size={22} /><div><strong>{availableModes[0] === "sponsored" && !sponsoredPostingAllowed ? "Sponsored access locked" : `${modeMeta[availableModes[0]].label} only`}</strong><span>{availableModes[0] === "sponsored" && !sponsoredPostingAllowed ? auth.accountType === "nonprofit" ? "This task stays visible, but publishing unlocks only after nonprofit verification and sponsorship approval." : "This task stays visible, but only a verified nonprofit account can publish it." : `This task is offered as ${modeMeta[availableModes[0]].label.toLowerCase()}, so there is nothing to choose here.`}</span></div></div>
             )}
             <div className="section-label">When</div>
-            <div className="segmented-row">{(["Tomorrow", "Saturday", "Flexible"] as const).map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setDateChoice(value); }}>{value}</button>)}</div>
+            <div className="segmented-row" data-choices={dateChoices.length}>{dateChoices.map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => setDateChoice(value)}>{value}</button>)}</div>
             <div className="section-label">Start time · <span className="section-label-value">{startTime}</span></div>
             <Carousel ariaLabel="Start time" className="time-rail" contentClassName="time-rail-track">
-              {startTimeSlots.map((slot) => <button key={slot} ref={slot === startTime ? selectedTimeRef : undefined} className="time-chip" aria-pressed={startTime === slot} data-active={startTime === slot ? "true" : "false"} onClick={() => setStartTime(slot)}>{slot}</button>)}
+              {timeSlots.map((slot) => <button key={slot} ref={slot === startTime ? selectedTimeRef : undefined} className="time-chip" aria-pressed={startTime === slot} data-active={startTime === slot ? "true" : "false"} onClick={() => setStartTime(slot)}>{slot}</button>)}
             </Carousel>
             <div className="derived-facts"><div><span>Duration</span><strong>{listing.duration}</strong></div><div><span>Set by</span><strong>The task you picked</strong></div></div>
             <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
