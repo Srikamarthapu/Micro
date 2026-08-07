@@ -506,7 +506,7 @@
 
 /* Chosen task, composed listing, and catalog-derived facts — step 3. */
 /* Sticky so the price and the way back to the catalog never scroll away. */
-.chosen-task { position: sticky; z-index: 6; top: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: var(--micro-paper-deep); box-shadow: 0 6px 14px rgba(31, 62, 88, 0.07); }
+.chosen-task { position: sticky; z-index: 6; top: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: var(--micro-paper-deep); box-shadow: -18px 0 0 var(--micro-paper), 18px 0 0 var(--micro-paper), 0 6px 14px rgba(31, 62, 88, 0.07); }
 .mobile-app-viewport[data-platform="android"] .chosen-task { top: 38px; }
 .chosen-task-body { display: grid; gap: 2px; min-width: 0; }
 .chosen-task-side { display: grid; justify-items: end; gap: 1px; }

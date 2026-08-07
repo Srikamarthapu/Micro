@@ -1323,22 +1323,19 @@ function AuthWelcomeScreen() {
       <main className="auth-welcome" data-testid="auth-welcome">
         <header className="auth-brand-lockup"><span className="auth-wordmark">Micro</span><span>helping nearby</span></header>
         <section className="auth-welcome-copy">
-          <span className="auth-kicker"><MapPin size={16} weight="fill" /> Your neighborhood, within reach</span>
           <h1>Small tasks.<br />Real neighbors.</h1>
-          <p>Post clearly scoped help, lend a hand nearby, or coordinate sponsored support through a verified nonprofit.</p>
+          <p>Post clearly scoped help, or lend a hand nearby.</p>
         </section>
-        <div className="auth-trust-strip" aria-label="Micro participation principles">
-          <span><ShieldCheck size={18} weight="fill" /> Clear scope</span>
-          <span><CurrencyDollar size={18} weight="fill" /> Fair pay</span>
-          <span><HandHeart size={18} weight="fill" /> Community care</span>
-        </div>
-        {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
+        <p className="auth-trust-strip" aria-label="Micro participation principles">Clear scope<span aria-hidden="true">·</span>Fair pay<span aria-hidden="true">·</span>Community care</p>
         <div className="auth-welcome-actions">
           <button className="primary-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account <ArrowRight size={19} /></button>
           <button className="secondary-button" onClick={() => flow.push(makeLoginScreen())}>I already have an account</button>
           {!auth.configured ? <button className="text-button auth-demo-link" onClick={auth.enterDemo}>Continue with the local demo</button> : null}
         </div>
-        <p className="auth-legal-note">Approximate locations stay public; exact addresses remain protected until a confirmed match.</p>
+        <div className="auth-welcome-footnotes">
+          <p className="auth-legal-note">Approximate locations stay public; exact addresses remain protected until a confirmed match.</p>
+          {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
+        </div>
       </main>
     </MobileScroll>
   );
@@ -1346,19 +1343,13 @@ function AuthWelcomeScreen() {
 
 function AuthConnectionNote() {
   return (
-    <div className="auth-connection-note" role="status">
-      <Info size={19} weight="fill" />
-      <span><strong>Supabase project selected</strong> The publishable key still needs to be connected before real accounts can be created.</span>
-    </div>
+    <p className="auth-connection-note" role="status">Accounts are not connected yet — use the local demo.</p>
   );
 }
 
 function AuthLiveBoundary() {
   return (
-    <div className="auth-connection-note live" role="note">
-      <ShieldCheck size={19} weight="fill" />
-      <span><strong>Account access is live</strong> Sign-in and nonprofit permissions use Supabase, and Google can render the basemap. Task markers, locations, messages, payments, and notifications are still preview data.</span>
-    </div>
+    <p className="auth-connection-note live" role="note">Sign-in is live. Tasks, messages, and payments remain preview data.</p>
   );
 }
 

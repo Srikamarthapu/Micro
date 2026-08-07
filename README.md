@@ -29,7 +29,9 @@ Requesters do not write listings. `src/taskCatalog.ts` holds 200 reviewed tasks 
 
 Posting opens on the catalog rather than on an abstract question: neighbors know "my leaves need raking," not "I want a Paid task." The first screen is a search box over all 200 tasks, a most-requested shortlist, and a grid of all 12 categories with counts. Drilling into a category shows its safety boundary before any task is chosen. Because the task is picked first, the arrangement step can offer only the arrangements that are honest for it — a food-pantry shift never offers Paid, and its category boundary is already on screen.
 
-Because nothing is typed, nothing unreviewed can be published. Scope, safety boundaries, youth eligibility, and pay bands are authored per entry and inherited per category, so moderation is a property of the catalog rather than a keyword filter running after the fact. The private match address is the only free-text field in the flow, and it is never shown publicly.
+If a search finds nothing, and only then, the requester can describe the task themselves. That path types a title and a description; the category, duration, and completion check stay bounded, prohibited work is rejected outright, and the safety boundary comes from the chosen category. Such a listing carries an "awaiting review" marker wherever it appears and never counts as youth-eligible.
+
+On the catalog path nothing is typed, so nothing unreviewed can be published. Scope, safety boundaries, youth eligibility, and pay bands are authored per entry and inherited per category, so moderation is a property of the catalog rather than a keyword filter running after the fact. The private match address is the only free-text field in the flow, and it is never shown publicly.
 
 ## Run locally
 
