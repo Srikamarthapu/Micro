@@ -17,6 +17,7 @@ import {
   ListChecks,
   MagnifyingGlass,
   MapPin,
+  Minus,
   Package,
   PaperPlaneTilt,
   Plus,
@@ -36,10 +37,12 @@ import {
 } from "@phosphor-icons/react";
 import "@fontsource-variable/atkinson-hyperlegible-next";
 import "@fontsource-variable/fraunces";
+import { AdvancedMarker, AdvancedMarkerAnchorPoint, APILoadingStatus, APIProvider, Map as GoogleMap, useApiLoadingStatus, useMap } from "@vis.gl/react-google-maps";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import {
   BottomSheet,
+  Carousel,
   FlowStack,
   KeyboardInput,
   KeyboardTextarea,
@@ -49,6 +52,16 @@ import {
   useKeyboardInsets,
   type FlowScreen,
 } from "./mobile";
+import {
+  catalogCategories,
+  composeListing,
+  defaultSelections,
+  searchTemplates,
+  taskTemplates,
+  templateById,
+  templatesForMode,
+  type TaskTemplate,
+} from "./taskCatalog";
 
 type TabId = "nearby" | "post" | "activity" | "messages" | "profile";
 type TaskMode = "paid" | "community" | "sponsored";
@@ -77,13 +90,67 @@ function appendTaskEvent(
   });
 }
 
+type LatLng = { lat: number; lng: number };
+type AreaId = "all" | "downtown" | "temescal" | "fruitvale" | "westoak" | "alameda" | "montreal";
+type MicroArea = { id: AreaId; label: string; blurb: string; center: LatLng; zoom: number; minZoom: number; maxZoom: number; spanMi: number };
+
+// Bounded area enum. The user never picks an arbitrary point, so the number of
+// distinct Static Maps requests is capped at one per area and every one caches.
+const areas: MicroArea[] = [
+  { id: "all", label: "Oakland & Alameda", blurb: "All demo neighborhoods", center: { lat: 37.8045, lng: -122.262 }, zoom: 12, minZoom: 11, maxZoom: 17, spanMi: 9 },
+  { id: "downtown", label: "Downtown & Lake Merritt", blurb: "Neighborhood results", center: { lat: 37.8044, lng: -122.2712 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "temescal", label: "Temescal & Rockridge", blurb: "Neighborhood results", center: { lat: 37.838, lng: -122.256 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "fruitvale", label: "Fruitvale & San Antonio", blurb: "Neighborhood results", center: { lat: 37.78, lng: -122.23 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "westoak", label: "West Oakland & Jack London", blurb: "Neighborhood results", center: { lat: 37.803, lng: -122.29 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "alameda", label: "Alameda Island", blurb: "Neighborhood results", center: { lat: 37.765, lng: -122.245 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "montreal", label: "Island of Montréal", blurb: "Montréal, QC", center: { lat: 45.519, lng: -73.585 }, zoom: 12, minZoom: 10, maxZoom: 18, spanMi: 16 },
+];
+
+// Panning is fenced to the chosen area so the map cannot wander off to another
+// city; zoom is clamped so it can neither leave the area nor dive past street level.
+function areaBounds(area: MicroArea) {
+  const latSpan = area.spanMi / 69;
+  const lngSpan = area.spanMi / (69 * Math.cos((area.center.lat * Math.PI) / 180));
+  return {
+    north: area.center.lat + latSpan,
+    south: area.center.lat - latSpan,
+    east: area.center.lng + lngSpan,
+    west: area.center.lng - lngSpan,
+  };
+}
+
+function areaById(id: AreaId): MicroArea {
+  return areas.find((area) => area.id === id) ?? areas[0];
+}
+
+function distanceMiles(from: LatLng, to: LatLng) {
+  const earthRadiusMiles = 3958.8;
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const deltaLat = toRadians(to.lat - from.lat);
+  const deltaLng = toRadians(to.lng - from.lng);
+  const haversine =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(toRadians(from.lat)) * Math.cos(toRadians(to.lat)) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * earthRadiusMiles * Math.asin(Math.sqrt(haversine));
+}
+
+function formatDistance(miles: number) {
+  return miles < 0.1 ? "under 0.1 mi" : `${miles.toFixed(1)} mi`;
+}
+
+const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? import.meta.env.VITE_GOOGLE_MAPS_STATIC_KEY ?? "";
+// Advanced (HTML) markers require a cloud-configured Map ID. DEMO_MAP_ID works
+// for development; a real Map ID should be created before any deploy.
+const mapsMapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID ?? "DEMO_MAP_ID";
+
 type Task = {
   id: string;
   title: string;
   description: string;
   mode: TaskMode;
   earning?: number;
-  distance: string;
+  coords: LatLng;
+  areaId: AreaId;
   area: string;
   time: string;
   duration: string;
@@ -104,15 +171,12 @@ type Task = {
 
 type PostDraft = {
   mode: TaskMode;
-  category: string;
-  title: string;
-  details: string;
-  included: string;
-  excluded: string;
-  completion: string;
+  /** Catalog entry the listing is built from. Listings exist only for catalog tasks. */
+  templateId: string;
+  /** Answers to that entry's bounded options, keyed by option id. */
+  selections: Record<string, string>;
   dateChoice: "Tomorrow" | "Saturday" | "Flexible";
   startTime: string;
-  duration: string;
   privateAddress: string;
   amount: string;
   photoAcknowledged: boolean;
@@ -171,22 +235,23 @@ type PersonaSessionState = {
   completionSubmissions: Record<string, CompletionSubmission>;
   taskReviews: Record<string, TaskReviewState>;
   notificationsEnabled: boolean;
-  profileArea: string;
+  profileAreaId: AreaId;
 };
+
+/** Half-hour slots a task may start in. Bounded so no start time is free-typed. */
+const startTimeSlots = ["7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM", "9:30 AM", "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM", "12:00 PM", "12:30 PM", "1:00 PM", "1:30 PM", "2:00 PM", "2:30 PM", "3:00 PM", "3:30 PM", "4:00 PM", "4:30 PM", "5:00 PM", "5:30 PM", "6:00 PM", "6:30 PM", "7:00 PM"];
+
+const exampleTemplate = templateById("yard-lavender") ?? taskTemplates[0];
+const exampleSelections = defaultSelections(exampleTemplate);
 
 const initialPostDraft: PostDraft = {
   mode: "paid",
-  category: "Yard & garden",
-  title: "Trim back lavender by walkway",
-  details: "Trim the lavender so the front walkway is clear. Hand shears and green bin are provided.",
-  included: "Trim lavender along the walkway; place clippings in the green bin.",
-  excluded: "No ladder, power tools, or work beyond the front path.",
-  completion: "Walkway is clear and clippings are in the provided bin.",
+  templateId: exampleTemplate.id,
+  selections: exampleSelections,
   dateChoice: "Tomorrow",
   startTime: "10:00 AM",
-  duration: "60 min",
   privateAddress: "214 Garden Walk",
-  amount: "28",
+  amount: String(composeListing(exampleTemplate, exampleSelections).suggestedPay),
   photoAcknowledged: false,
   photoPreview: "",
   riskConfirmed: false,
@@ -200,8 +265,9 @@ const tasks: Task[] = [
     description: "Rake leaves and bag them for green bins.",
     mode: "sponsored",
     earning: 35,
-    distance: "1.2 mi",
-    area: "East San José",
+    coords: { lat: 37.7792, lng: -122.2281 },
+    areaId: "fruitvale",
+    area: "Fruitvale",
     time: "Today · 3:00 PM",
     duration: "60–90 min",
     icon: Leaf,
@@ -217,8 +283,9 @@ const tasks: Task[] = [
     description: "Carry two sealed boxes from the porch into the garage.",
     mode: "paid",
     earning: 18,
-    distance: "0.7 mi",
-    area: "Little Portugal",
+    coords: { lat: 37.8064, lng: -122.2934 },
+    areaId: "westoak",
+    area: "West Oakland",
     time: "Tomorrow · 10:00 AM",
     duration: "20–30 min",
     icon: Package,
@@ -232,8 +299,9 @@ const tasks: Task[] = [
     title: "Set up a tablet for video calls",
     description: "Make the text larger and pin the video-call app to the home screen.",
     mode: "community",
-    distance: "1.8 mi",
-    area: "Alum Rock",
+    coords: { lat: 37.8362, lng: -122.2603 },
+    areaId: "temescal",
+    area: "Temescal",
     time: "Saturday · 11:00 AM",
     duration: "About 45 min",
     icon: UsersThree,
@@ -248,13 +316,14 @@ const tasks: Task[] = [
     description: "Sort shelf-stable groceries at the community center.",
     mode: "sponsored",
     earning: 24,
-    distance: "2.1 mi",
-    area: "Seven Trees",
+    coords: { lat: 37.7861, lng: -122.2401 },
+    areaId: "fruitvale",
+    area: "San Antonio",
     time: "Saturday · 9:30 AM",
     duration: "60 min",
     icon: HandHeart,
     youthEligible: true,
-    category: "Community",
+    category: "Community & mutual aid",
     included: "Sort shelf-stable groceries; pack labeled donation bags with staff present",
     excluded: "No driving, heavy lifting, food handling outside staff guidance, or private-home entry",
     completion: "Assigned bags are packed, counted, and checked by the pantry coordinator.",
@@ -265,8 +334,9 @@ const tasks: Task[] = [
     description: "Shape the waist-high hedge and sweep the walkway afterward.",
     mode: "paid",
     earning: 22,
-    distance: "1.5 mi",
-    area: "Tully–Senter",
+    coords: { lat: 37.8442, lng: -122.2513 },
+    areaId: "temescal",
+    area: "Rockridge",
     time: "Sunday · 9:00 AM",
     duration: "45–60 min",
     icon: Scissors,
@@ -280,15 +350,49 @@ const tasks: Task[] = [
     title: "Set up two folding tables",
     description: "Help a neighborhood group prepare a public-room craft table.",
     mode: "community",
-    distance: "2.4 mi",
-    area: "Mayfair",
+    coords: { lat: 37.7649, lng: -122.2447 },
+    areaId: "alameda",
+    area: "Alameda",
     time: "Sunday · 1:00 PM",
     duration: "About 30 min",
     icon: House,
-    category: "Community",
+    category: "Community & mutual aid",
     included: "Unfold two lightweight tables; arrange chairs in the public craft room",
     excluded: "No vehicle use, lifting over 20 pounds, or private-room access",
     completion: "Two stable tables and the requested chairs are ready before the event.",
+  },
+  {
+    id: "stoop",
+    title: "Shovel a front stoop and stairs",
+    description: "Clear overnight snow from the stairs and the walkway to the sidewalk.",
+    mode: "paid",
+    earning: 26,
+    coords: { lat: 45.5231, lng: -73.5803 },
+    areaId: "montreal",
+    area: "Le Plateau-Mont-Royal",
+    time: "Tomorrow · 8:00 AM",
+    duration: "30–45 min",
+    icon: House,
+    category: "Home help",
+    included: "Clear the exterior staircase and the walkway to the sidewalk; spread the provided salt",
+    excluded: "No roof, balcony, ladder, or clearing a parked car",
+    completion: "Stairs and walkway are clear and salted before the morning.",
+  },
+  {
+    id: "brunch",
+    title: "Set up chairs for a community brunch",
+    description: "Help arrange tables and chairs in a neighbourhood community hall.",
+    mode: "community",
+    coords: { lat: 45.5232, lng: -73.6002 },
+    areaId: "montreal",
+    area: "Mile End",
+    time: "Sunday · 10:00 AM",
+    duration: "About 40 min",
+    icon: UsersThree,
+    category: "Community & mutual aid",
+    included: "Unfold tables and arrange chairs in the main hall with an organizer present",
+    excluded: "No food handling, vehicle use, or lifting over 20 pounds",
+    completion: "The hall is arranged as the organizer requested before guests arrive.",
   },
 ];
 
@@ -298,12 +402,13 @@ const sponsoredFixtureTask: Task = {
   description: "Pick up a prepaid grocery order and carry it to the front door.",
   mode: "sponsored",
   earning: 24,
-  distance: "1.4 mi",
-  area: "Alum Rock",
+  coords: { lat: 37.7703, lng: -122.2534 },
+  areaId: "alameda",
+  area: "Alameda West End",
   time: "Saturday · 2:00 PM",
   duration: "About 45 min",
   icon: Package,
-  category: "Errands",
+  category: "Errands & pickup",
   included: "Collect the prepaid order and carry the bags to the front door.",
   excluded: "No purchasing, substitutions, or entry into the home.",
   completion: "Order is delivered to the front door and confirmed in the task thread.",
@@ -397,8 +502,8 @@ type MicroContextValue = {
   setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
   notificationsEnabled: boolean;
   setNotificationsEnabled: (enabled: boolean) => void;
-  profileArea: string;
-  setProfileArea: (area: string) => void;
+  profileAreaId: AreaId;
+  setProfileAreaId: (areaId: AreaId) => void;
   profilePhotos: Record<Persona, string>;
   setProfilePhotos: Dispatch<SetStateAction<Record<Persona, string>>>;
 };
@@ -450,23 +555,23 @@ function MicroProvider({ children }: { children: ReactNode }) {
   const [completionSubmissions, setCompletionSubmissions] = useState<Record<string, CompletionSubmission>>({});
   const [taskReviews, setTaskReviews] = useState<Record<string, TaskReviewState>>({});
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [profileArea, setProfileArea] = useState("East San José");
+  const [profileAreaId, setProfileAreaId] = useState<AreaId>("all");
   const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
   const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
     adult: {
-      selectedTaskId: "leaves", paidStage: "Payment secured", activeTask: tasks[0], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: ["hedge", "table"], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileArea: "East San José",
+      selectedTaskId: "leaves", paidStage: "Payment secured", activeTask: tasks[0], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: ["hedge", "table"], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
     },
     youth: {
-      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileArea: "East San José",
+      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
     },
     guardian: {
-      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "requester", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileArea: "East San José",
+      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "requester", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
     },
   });
   const setPersona = (nextPersona: Persona) => {
     if (nextPersona === persona) return;
     personaSessionsRef.current[persona] = {
-      selectedTaskId, paidStage, activeTask, communityTask, communityStage, communityChecks, postedTask, postDraft, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, savedTaskIds, sponsorFunded, sponsorSeeking, threadMessages, blockedThreadIds, blockedRequesterNames, reportedTaskIds, reportReasons, completionSubmissions, taskReviews, notificationsEnabled, profileArea,
+      selectedTaskId, paidStage, activeTask, communityTask, communityStage, communityChecks, postedTask, postDraft, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, savedTaskIds, sponsorFunded, sponsorSeeking, threadMessages, blockedThreadIds, blockedRequesterNames, reportedTaskIds, reportReasons, completionSubmissions, taskReviews, notificationsEnabled, profileAreaId,
     };
     const next = personaSessionsRef.current[nextPersona];
     setSelectedTaskId(next.selectedTaskId);
@@ -493,7 +598,7 @@ function MicroProvider({ children }: { children: ReactNode }) {
     setCompletionSubmissions(next.completionSubmissions);
     setTaskReviews(next.taskReviews);
     setNotificationsEnabled(next.notificationsEnabled);
-    setProfileArea(next.profileArea);
+    setProfileAreaId(next.profileAreaId);
     setPersonaState(nextPersona);
   };
   const value = useMemo(
@@ -570,12 +675,12 @@ function MicroProvider({ children }: { children: ReactNode }) {
       setTaskReviews,
       notificationsEnabled,
       setNotificationsEnabled,
-      profileArea,
-      setProfileArea,
+      profileAreaId,
+      setProfileAreaId,
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, paidStage, persona, postDraft, postedTask, profileArea, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
@@ -693,7 +798,9 @@ function BottomNav() {
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileArea: area, setProfileArea: setArea } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const activeArea = areaById(areaId);
+  const [mapUnavailable, setMapUnavailable] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -716,8 +823,8 @@ function NearbyScreen() {
     (task) =>
       (mode === "all" || task.mode === mode) &&
       (category === "all" || task.category === category) &&
-      (area === "East San José" || task.area === area) &&
-      parseFloat(task.distance) <= radius &&
+      (areaId === "all" || task.areaId === areaId) &&
+      distanceMiles(activeArea.center, task.coords) <= radius &&
       (when === "any" || (when === "today" ? task.time.startsWith("Today") : /Saturday|Sunday/.test(task.time))) &&
       (!youthOnly || task.youthEligible) &&
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
@@ -725,12 +832,9 @@ function NearbyScreen() {
   const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0] ?? allTasks[0];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
   const activeFilterCount = Number(mode !== "all") + Number(category !== "all") + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
-  const ownerPinClasses = Object.fromEntries(ownedTasks.map((task, index) => [task.id, index % 2 ? "pin-posted-alt" : "pin-posted"]));
-  const pinClasses: Record<string, string> = { boxes: "pin-home", tablet: "pin-community", leaves: "pin-sponsored", hedge: "pin-hedge", pantry: "pin-pantry", table: "pin-table", "grocery-sponsored": "pin-grocery", ...ownerPinClasses };
-  const mappableTasks = allTasks.filter((task) => pinClasses[task.id] && visibleIds.has(task.id));
   const mapTasks = primaryVisibleTask
-    ? [primaryVisibleTask, ...mappableTasks.filter((task) => task.id !== primaryVisibleTask.id)].filter((task) => pinClasses[task.id]).slice(0, 4)
-    : mappableTasks.slice(0, 4);
+    ? [primaryVisibleTask, ...allTasks.filter((task) => visibleIds.has(task.id) && task.id !== primaryVisibleTask.id)]
+    : allTasks.filter((task) => visibleIds.has(task.id));
 
   useEffect(() => {
     if (primaryVisibleTask && selectedTaskId !== primaryVisibleTask.id) setSelectedTaskId(primaryVisibleTask.id);
@@ -750,7 +854,7 @@ function NearbyScreen() {
             <span className="wordmark">Micro</span>
             <button className="location-button" onClick={() => setLocationOpen(true)}>
               <MapPin size={18} weight="fill" aria-hidden="true" />
-              <span>{area}</span>
+              <span>{activeArea.label}</span>
               <CaretDown size={16} weight="bold" aria-hidden="true" />
             </button>
             <button className="profile-quick-button" aria-label="Open profile" onClick={() => setActiveTab("profile")}><UserCircle size={28} weight="regular" aria-hidden="true" /></button>
@@ -769,12 +873,13 @@ function NearbyScreen() {
             </button>
           </div>
 
-          <section className="map-stage" aria-label="Approximate task map">
-            <img className="map-image" src="/assets/micro/neighborhood-map.png" alt="Generalized street map of East San José" />
-            {mapTasks.map((task) => (
-              <MapTaskPin key={task.id} className={pinClasses[task.id]} task={task} active={primaryVisibleTask?.id === task.id} onSelect={setSelectedTaskId} />
-            ))}
-            <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />Approximate locations</div>
+          {/* The map owns its own drag gesture, so it opts out of parent scroll dragging. */}
+          <section className="map-stage" data-scroll-drag="ignore" data-fallback={!mapsApiKey || mapUnavailable ? "true" : "false"} aria-label={`Approximate task map for ${activeArea.label}`}>
+            {mapsApiKey ? (
+              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={primaryVisibleTask?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} />
+            ) : null}
+            {!mapsApiKey || mapUnavailable ? <div className="map-placeholder" aria-hidden="true" /> : null}
+            <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Map needs an API key" : mapUnavailable || "Approximate locations"}</div>
           </section>
 
           <section className="tasks-sheet" aria-labelledby="nearby-heading">
@@ -803,7 +908,7 @@ function NearbyScreen() {
                 {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} onOpen={openTask} />)}
               </div>
             ) : (
-              <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategory("all"); setWhen("any"); setRadius(3); setYouthOnly(false); setArea("East San José"); setSearch(""); }}>Clear filters</button> : null}</div>
+              <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategory("all"); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
             )}
           </section>
         </div>
@@ -815,17 +920,17 @@ function NearbyScreen() {
             <legend>Task type</legend>
             {(["all", "paid", "community", "sponsored"] as const).map((value) => <button key={value} className="choice-row" aria-pressed={mode === value} data-selected={mode === value ? "true" : "false"} onClick={() => setMode(value)}><span>{value === "all" ? "All nearby help" : modeMeta[value].label}</span><span className="radio-mark">{mode === value ? <Check size={15} weight="bold" /> : null}</span></button>)}
           </fieldset>
-          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Category</legend><div className="filter-chip-grid">{["all", "Yard & garden", "Home help", "Tech help", "Community", "Errands"].map((value) => <button key={value} aria-pressed={category === value} data-active={category === value ? "true" : "false"} onClick={() => setCategory(value)}>{value === "all" ? "Any category" : value}</button>)}</div></fieldset>
+          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Category</legend><div className="filter-chip-grid">{["all", ...catalogCategories.map((entry) => entry.label)].map((value) => <button key={value} aria-pressed={category === value} data-active={category === value ? "true" : "false"} onClick={() => setCategory(value)}>{value === "all" ? "Any category" : value}</button>)}</div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>When</legend><div className="segmented-row">{(["any", "today", "weekend"] as const).map((value) => <button key={value} aria-pressed={when === value} data-active={when === value ? "true" : "false"} onClick={() => setWhen(value)}>{value === "any" ? "Any time" : value === "today" ? "Today" : "Weekend"}</button>)}</div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Distance</legend><div className="segmented-row two-segments">{([1, 3] as const).map((value) => <button key={value} aria-pressed={radius === value} data-active={radius === value ? "true" : "false"} onClick={() => setRadius(value)}>Within {value} mi</button>)}</div></fieldset>
           <button className="choice-row" aria-pressed={youthOnly} data-selected={youthOnly ? "true" : "false"} onClick={() => setYouthOnly((current) => !current)}><span><strong>Youth-eligible only</strong><small>Guardian approval is still task-specific</small></span><span className="checkbox">{youthOnly ? <Check size={14} weight="bold" /> : null}</span></button>
-          <div className="info-strip"><MapPin size={18} /> Within about {radius} {radius === 1 ? "mile" : "miles"} of {area}</div>
+          <div className="info-strip"><MapPin size={18} /> Within about {radius} {radius === 1 ? "mile" : "miles"} of {activeArea.label}</div>
           <button className="primary-button" onClick={() => setFiltersOpen(false)}>Show {visibleTasks.length} {visibleTasks.length === 1 ? "task" : "tasks"}</button>
         </div>
       </BottomSheet>
 
       <BottomSheet open={locationOpen} onOpenChange={setLocationOpen} title="Choose your area" description="Micro works with approximate neighborhoods. A private address is never placed on the public map." snap={0.48}>
-        <div className="sheet-form">{["East San José", "Alum Rock", "Little Portugal"].map((value) => <button key={value} className="choice-row" aria-pressed={area === value} data-selected={area === value ? "true" : "false"} onClick={() => { setArea(value); setLocationOpen(false); }}><span><strong>{value}</strong><small>{value === "East San José" ? "All demo neighborhoods" : "Neighborhood results"}</small></span>{area === value ? <CheckCircle size={22} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div>
+        <div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={areaId === option.id} data-selected={areaId === option.id ? "true" : "false"} onClick={() => { setAreaId(option.id); setLocationOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{areaId === option.id ? <CheckCircle size={22} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div>
       </BottomSheet>
     </>
   );
@@ -838,27 +943,136 @@ function PersonAvatar({ src, initials, size = "regular", label }: { src?: string
   </span>;
 }
 
+function useTaskDistanceLabel() {
+  const { profileAreaId } = useMicro();
+  const origin = areaById(profileAreaId).center;
+  return (task: Task) => formatDistance(distanceMiles(origin, task.coords));
+}
+
 function taskAvatar(task: Task, profilePhotos: Record<Persona, string>) {
   const detail = getTaskDetails(task);
   return task.ownerPersona ? profilePhotos[task.ownerPersona] || detail.avatar : detail.avatar;
 }
 
-function MapTaskPin({ task, active, onSelect, className }: { task: Task; active: boolean; onSelect: (id: string) => void; className: string }) {
+function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void }) {
+  return (
+    <APIProvider apiKey={mapsApiKey}>
+      <MapStatusWatch onUnavailable={onUnavailable} />
+      <GoogleMap
+        className="nearby-google-map"
+        mapId={mapsMapId}
+        defaultCenter={area.center}
+        defaultZoom={area.zoom}
+        minZoom={area.minZoom}
+        maxZoom={area.maxZoom}
+        restriction={{ latLngBounds: areaBounds(area), strictBounds: true }}
+        gestureHandling="greedy"
+        disableDefaultUI
+        clickableIcons={false}
+        reuseMaps
+      >
+        {tasks.map((task) => (
+          <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} onSelect={onSelect} />
+        ))}
+      </GoogleMap>
+      <MapAreaSync area={area} />
+      <MapHealthCheck onUnavailable={onUnavailable} />
+      <MapZoomControls area={area} />
+    </APIProvider>
+  );
+}
+
+// Surfaces an unusable map (API not enabled, key rejected) instead of leaving an
+// empty frame captioned as if it were showing locations.
+function MapStatusWatch({ onUnavailable }: { onUnavailable: (reason: string) => void }) {
+  const status = useApiLoadingStatus();
+  useEffect(() => {
+    if (status === APILoadingStatus.AUTH_FAILURE) onUnavailable("Map key was rejected");
+    else if (status === APILoadingStatus.FAILED) onUnavailable("Map could not be loaded");
+  }, [status, onUnavailable]);
+
+  // Google reports key/API problems through this global rather than the loader
+  // status: the script loads fine, the map just never renders.
+  useEffect(() => {
+    const host = window as unknown as { gm_authFailure?: () => void };
+    const previous = host.gm_authFailure;
+    host.gm_authFailure = () => {
+      onUnavailable("Map key rejected or API not enabled");
+      previous?.();
+    };
+    return () => { host.gm_authFailure = previous; };
+  }, [onUnavailable]);
+
+  return null;
+}
+
+// Backstop for the case Google logs an error without invoking gm_authFailure:
+// a working map always paints a .gm-style subtree into its container.
+function MapHealthCheck({ onUnavailable }: { onUnavailable: (reason: string) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!map) return;
+    const timer = setTimeout(() => {
+      if (!map.getDiv()?.querySelector(".gm-style")) onUnavailable("Maps JavaScript API is not enabled");
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [map, onUnavailable]);
+  return null;
+}
+
+// Choosing a new area reframes the map; panning afterwards is the user's own.
+function MapAreaSync({ area }: { area: MicroArea }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!map) return;
+    map.panTo(area.center);
+    map.setZoom(area.zoom);
+  }, [map, area]);
+  return null;
+}
+
+// Google's own controls are hidden so zoom matches the phone-frame styling.
+function MapZoomControls({ area }: { area: MicroArea }) {
+  const map = useMap();
+  const [zoom, setZoom] = useState(area.zoom);
+  useEffect(() => {
+    if (!map) return;
+    setZoom(map.getZoom() ?? area.zoom);
+    const listener = map.addListener("zoom_changed", () => setZoom(map.getZoom() ?? area.zoom));
+    return () => listener.remove();
+  }, [map, area]);
+  const step = (delta: number) => map?.setZoom((map.getZoom() ?? area.zoom) + delta);
+  return (
+    <div className="map-zoom-controls">
+      <button aria-label="Zoom in" disabled={zoom >= area.maxZoom} onClick={() => step(1)}><Plus size={17} weight="bold" aria-hidden="true" /></button>
+      <button aria-label="Zoom out" disabled={zoom <= area.minZoom} onClick={() => step(-1)}><Minus size={17} weight="bold" aria-hidden="true" /></button>
+    </div>
+  );
+}
+
+function MapTaskPin({ task, active, onSelect }: { task: Task; active: boolean; onSelect: (id: string) => void }) {
   const { profilePhotos } = useMicro();
   const detail = getTaskDetails(task);
   const labelValue = task.earning ? `$${task.earning}` : "Volunteer";
   return (
-    <button
-      className={`map-pin ${className}`}
-      data-mode={task.mode}
-      data-active={active ? "true" : "false"}
-      aria-pressed={active}
-      aria-label={`${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
+    <AdvancedMarker
+      position={task.coords}
+      zIndex={active ? 7 : 3}
+      anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+      title={`${detail.requester}: ${task.title}`}
       onClick={() => onSelect(task.id)}
     >
-      <span className="map-avatar-bubble"><PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} size={active ? "pin-active" : "pin"} label={`${detail.requester} profile photo`} /><span className="map-mode-dot" aria-hidden="true" /></span>
-      {active ? <span className="map-pin-label"><strong>{detail.requester.split(" ")[0]}</strong><small>{labelValue}</small></span> : null}
-    </button>
+      <span
+        className="map-marker"
+        data-mode={task.mode}
+        data-active={active ? "true" : "false"}
+        role="button"
+        aria-label={`${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
+      >
+        <span className="map-avatar-bubble"><PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} size={active ? "pin-active" : "pin"} label={`${detail.requester} profile photo`} /><span className="map-mode-dot" aria-hidden="true" /></span>
+        {active ? <span className="map-pin-label"><strong>{detail.requester.split(" ")[0]}</strong><small>{labelValue}</small></span> : null}
+      </span>
+    </AdvancedMarker>
   );
 }
 
@@ -866,13 +1080,14 @@ function TaskCard({ task, selected = false, unavailable = false, onOpen }: { tas
   const ModeIcon = modeMeta[task.mode].icon;
   const TaskIcon = task.icon;
   const { persona } = useMicro();
+  const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
   const isOwnedListing = task.ownerPersona === persona;
   return (
     <article className="task-card" data-selected={selected ? "true" : "false"} data-mode={task.mode} data-unavailable={unavailable ? "true" : "false"}>
       <div className="task-requester-row">
         <span className="task-icon" aria-hidden="true"><TaskIcon size={22} weight="bold" /></span>
-        <div><strong>{detail.requester}</strong><span>{task.area} · {task.distance}</span></div>
+        <div><strong>{detail.requester}</strong><span>{task.area} · {distanceLabel(task)}</span></div>
         <div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[task.mode].label}</div>
       </div>
       <div className="task-heading-pay">
@@ -895,12 +1110,14 @@ function TaskCard({ task, selected = false, unavailable = false, onOpen }: { tas
 
 function getTaskDetails(task: Task) {
   const details: Record<string, { included: string[]; excluded: string; requester: string; initials: string; avatar: string; address: string; trust: string }> = {
-    leaves: { included: ["Rake the front lawn and walkway", "Fill the provided green-waste bags"], excluded: "No ladder, roof, or power-tool work", requester: "Rosa M.", initials: "RM", avatar: "/assets/micro/avatars/rosa-m.png", address: "Near Tully Rd & S White Rd", trust: "Email confirmed · 9 completed · 4.9 from 7 reviews" },
-    boxes: { included: ["Carry two sealed lamp boxes", "Place both boxes inside the garage"], excluded: "No stairs, unpacking, or furniture moving", requester: "Devon L.", initials: "DL", avatar: "/assets/micro/avatars/devon-l.png", address: "Near E Santa Clara St & 28th St", trust: "Email confirmed · 5 completed · 5.0 from 4 reviews" },
-    tablet: { included: ["Increase text size and contrast", "Pin the video-call app to the home screen"], excluded: "No passwords, purchases, or account recovery", requester: "June P.", initials: "JP", avatar: "/assets/micro/avatars/june-p.png", address: "Alum Rock library meeting room", trust: "Email confirmed · community member · 5.0 from 3 reviews" },
-    pantry: { included: ["Sort shelf-stable groceries", "Pack labeled donation bags with staff present"], excluded: "No driving, heavy lifting, or private-home entry", requester: "Mayfair Pantry", initials: "MP", avatar: "/assets/micro/avatars/mayfair-pantry.png", address: "Mayfair Community Center front desk", trust: "Community partner · public setting" },
-    hedge: { included: ["Shape the waist-high front hedge", "Sweep clippings from the walkway"], excluded: "No ladder, chainsaw, or work above shoulder height", requester: "Nina S.", initials: "NS", avatar: "/assets/micro/avatars/nina-s.png", address: "Near Tully Rd & McLaughlin Ave", trust: "Email confirmed · 7 completed · 4.8 from 6 reviews" },
-    table: { included: ["Unfold two lightweight tables", "Arrange chairs in the public craft room"], excluded: "No vehicle use or lifting over 20 lb", requester: "Mayfair Neighbors", initials: "MN", avatar: "/assets/micro/avatars/mayfair-neighbors.png", address: "Mayfair Community Room", trust: "Community organizer · 12 completed tasks" },
+    leaves: { included: ["Rake the front lawn and walkway", "Fill the provided green-waste bags"], excluded: "No ladder, roof, or power-tool work", requester: "Rosa M.", initials: "RM", avatar: "/assets/micro/avatars/rosa-m.png", address: "Near Fruitvale Ave & E 16th St", trust: "Email confirmed · 9 completed · 4.9 from 7 reviews" },
+    boxes: { included: ["Carry two sealed lamp boxes", "Place both boxes inside the garage"], excluded: "No stairs, unpacking, or furniture moving", requester: "Devon L.", initials: "DL", avatar: "/assets/micro/avatars/devon-l.png", address: "Near Mandela Pkwy & 14th St", trust: "Email confirmed · 5 completed · 5.0 from 4 reviews" },
+    tablet: { included: ["Increase text size and contrast", "Pin the video-call app to the home screen"], excluded: "No passwords, purchases, or account recovery", requester: "June P.", initials: "JP", avatar: "/assets/micro/avatars/june-p.png", address: "Temescal branch library meeting room", trust: "Email confirmed · community member · 5.0 from 3 reviews" },
+    pantry: { included: ["Sort shelf-stable groceries", "Pack labeled donation bags with staff present"], excluded: "No driving, heavy lifting, or private-home entry", requester: "San Antonio Pantry", initials: "SP", avatar: "/assets/micro/avatars/mayfair-pantry.png", address: "San Antonio Community Center front desk", trust: "Community partner · public setting" },
+    hedge: { included: ["Shape the waist-high front hedge", "Sweep clippings from the walkway"], excluded: "No ladder, chainsaw, or work above shoulder height", requester: "Nina S.", initials: "NS", avatar: "/assets/micro/avatars/nina-s.png", address: "Near College Ave & Alcatraz Ave", trust: "Email confirmed · 7 completed · 4.8 from 6 reviews" },
+    stoop: { included: ["Clear the exterior staircase and landing", "Clear the walkway to the sidewalk and spread the provided salt"], excluded: "No roof, balcony, ladder, or vehicle clearing", requester: "Chloé B.", initials: "CB", avatar: "", address: "Near Rue Saint-Denis & Rue Rachel", trust: "Email confirmed · 6 completed · 4.9 from 5 reviews" },
+    brunch: { included: ["Unfold tables in the main hall", "Arrange chairs as the organizer directs"], excluded: "No food handling, vehicle use, or lifting over 20 lb", requester: "Mile End Voisins", initials: "MV", avatar: "", address: "Community hall near Avenue du Parc", trust: "Community organizer · public setting" },
+    table: { included: ["Unfold two lightweight tables", "Arrange chairs in the public craft room"], excluded: "No vehicle use or lifting over 20 lb", requester: "Alameda Neighbors", initials: "AN", avatar: "/assets/micro/avatars/mayfair-neighbors.png", address: "Alameda community room on Park St", trust: "Community organizer · 12 completed tasks" },
   };
   const detailId = task.id.replace(/-history$/, "");
   return details[detailId] ?? {
@@ -925,6 +1142,7 @@ function makeTaskScreen(task: Task): FlowScreen {
 
 function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) {
   const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds } = useMicro();
+  const distanceLabel = useTaskDistanceLabel();
   const [phase, setPhase] = useState<"detail" | "review" | "approval" | "accepted">("detail");
   const TaskIcon = task.icon;
   const ModeIcon = modeMeta[task.mode].icon;
@@ -1005,7 +1223,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
               <div className="review-list">
                 <ReviewRow icon={ListChecks} title="Clear scope" text={task.description} />
                 <ReviewRow icon={CalendarBlank} title="Time commitment" text={`${task.time} · ${task.duration}`} />
-                <ReviewRow icon={MapPin} title="Public location" text={`${task.area}, about ${task.distance}. Exact address stays private until this protected match.`} />
+                <ReviewRow icon={MapPin} title="Public location" text={`${task.area}, about ${distanceLabel(task)}. Exact address stays private until this protected match.`} />
                 <ReviewRow icon={ShieldCheck} title="Safety check" text="Use task messages, bring no extra tools, and report changes before starting." />
               </div>
               <p className="fine-print">By accepting, you agree to arrive within the agreed window and keep communication in Micro.</p>
@@ -1023,7 +1241,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
                 <h2>At a glance</h2>
                 <div className="glance-grid">
                   <FactTile icon={Tag} label="Category" value={task.category ?? "Neighborhood help"} />
-                  <FactTile icon={MapPin} label="Area" value={`${task.area} · ${task.distance}`} />
+                  <FactTile icon={MapPin} label="Area" value={`${task.area} · ${distanceLabel(task)}`} />
                   <FactTile icon={CalendarBlank} label="When" value={task.time} />
                   <FactTile icon={Clock} label="Time needed" value={task.duration} />
                   <FactTile icon={ShieldCheck} label="Task setup" value="Clear scope" />
@@ -1062,27 +1280,56 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
 
 function PostScreen() {
   const keyboard = useKeyboard();
-  const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileArea, profilePhotos } = useMicro();
+  const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileAreaId, profilePhotos, ownedTasks } = useMicro();
+  const listingArea = areaById(profileAreaId === "all" ? "downtown" : profileAreaId);
+  const profileArea = listingArea.label;
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [browseCategoryId, setBrowseCategoryId] = useState("all");
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
-  const { mode, category, title, details, included, excluded, completion, dateChoice, startTime, duration, privateAddress, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
+  const selectedTimeRef = useRef<HTMLButtonElement>(null);
+  const { mode, templateId, selections, dateChoice, startTime, privateAddress, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
   function setField<K extends keyof PostDraft>(key: K, value: SetStateAction<PostDraft[K]>) {
     setPostDraft((current) => ({ ...current, [key]: typeof value === "function" ? (value as (previous: PostDraft[K]) => PostDraft[K])(current[key]) : value }));
   }
-  const setMode = (value: TaskMode) => setField("mode", value);
-  const setCategory = (value: string) => {
-    setField("category", value);
-    setField("riskConfirmed", false);
+
+  const template = templateById(templateId) ?? taskTemplates[0];
+  // Every published word comes from here: the requester picks a catalog task and
+  // answers its bounded options, and the listing is composed from that.
+  const listing = useMemo(() => composeListing(template, selections), [selections, template]);
+  const modePool = useMemo(() => templatesForMode(mode), [mode]);
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of modePool) counts[entry.categoryId] = (counts[entry.categoryId] ?? 0) + 1;
+    return counts;
+  }, [modePool]);
+  const results = useMemo(() => searchTemplates(browseCategoryId === "all" ? modePool : modePool.filter((entry) => entry.categoryId === browseCategoryId), catalogQuery), [browseCategoryId, catalogQuery, modePool]);
+
+  const setMode = (value: TaskMode) => setPostDraft((current) => {
+    const held = templateById(current.templateId);
+    if (held?.modes.includes(value)) return { ...current, mode: value };
+    // The held task is not offered in the new mode, so fall back to that mode's
+    // most requested task rather than carrying an unavailable listing forward.
+    const replacement = templatesForMode(value)[0];
+    const nextSelections = defaultSelections(replacement);
+    return { ...current, mode: value, templateId: replacement.id, selections: nextSelections, amount: String(composeListing(replacement, nextSelections).suggestedPay), riskConfirmed: false };
+  });
+  const selectTemplate = (next: TaskTemplate) => {
+    keyboard.hide();
+    const nextSelections = defaultSelections(next);
+    setPostDraft((current) => ({ ...current, templateId: next.id, selections: nextSelections, amount: String(composeListing(next, nextSelections).suggestedPay), riskConfirmed: false }));
+    setStep(2);
   };
-  const setTitle = (value: string) => setPostDraft((current) => ({ ...current, title: value, riskConfirmed: false }));
-  const setDetails = (value: string) => setPostDraft((current) => ({ ...current, details: value, riskConfirmed: false }));
-  const setIncluded = (value: string) => setPostDraft((current) => ({ ...current, included: value, riskConfirmed: false }));
-  const setExcluded = (value: string) => setPostDraft((current) => ({ ...current, excluded: value, riskConfirmed: false }));
-  const setCompletion = (value: string) => setPostDraft((current) => ({ ...current, completion: value, riskConfirmed: false }));
+  const setChoice = (optionId: string, choiceId: string) => {
+    keyboard.hide();
+    setPostDraft((current) => {
+      const nextSelections = { ...current.selections, [optionId]: choiceId };
+      return { ...current, selections: nextSelections, amount: String(composeListing(template, nextSelections).suggestedPay) };
+    });
+  };
   const setDateChoice = (value: PostDraft["dateChoice"]) => setField("dateChoice", value);
-  const setStartTime = (value: string) => setField("startTime", value);
-  const setDuration = (value: string) => setField("duration", value);
+  const setStartTime = (value: string) => { keyboard.hide(); setField("startTime", value); };
   const setPrivateAddress = (value: string) => setField("privateAddress", value);
   const setAmount = (value: string) => setField("amount", value);
   const setPhotoAcknowledged = (value: SetStateAction<boolean>) => setField("photoAcknowledged", value);
@@ -1092,21 +1339,11 @@ function PostScreen() {
   const numericAmount = Number(amount || 0);
   const platformFee = mode === "community" ? 0 : Math.max(2, Math.round(numericAmount * 0.05));
   const processingFee = mode === "community" ? 0 : Math.max(1, Math.round(numericAmount * 0.03));
-  const durationMinutes = Number(duration.match(/\d+/)?.[0] || 60);
-  const hourlyEquivalent = durationMinutes > 0 ? Math.round((numericAmount * 60) / durationMinutes) : numericAmount;
-  const prohibitedMatch = /(electrical|gas line|roof|ladder|weapon|medical care|childcare)/i.test(`${title} ${details} ${included} ${completion}`);
-  const riskCopy = category === "Yard & garden"
-    ? "No ladders, roofs, power tools, pesticide handling, or work above shoulder height"
-    : category === "Errands"
-      ? "No cash handling, account access, unplanned purchases, passengers, or medication pickup"
-      : "No electrical, gas, structural repair, childcare, medical care, or access to private accounts";
+  const hourlyEquivalent = Math.round((numericAmount * 60) / listing.minutes);
   const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
   const draftChanged = JSON.stringify(postDraft) !== JSON.stringify(initialPostDraft);
-  const timeValid = /^(?:1[0-2]|0?[1-9]):[0-5]\d\s?(?:AM|PM)$/i.test(startTime.trim());
-  const durationMatch = duration.trim().match(/^(\d{1,3})\s*(?:min|mins|minutes)$/i);
-  const durationValid = Boolean(durationMatch && Number(durationMatch[1]) >= 15 && Number(durationMatch[1]) <= 240);
-  const copyValid = title.trim().length >= 8 && details.trim().length >= 20 && included.trim().length >= 10 && excluded.trim().length >= 8 && completion.trim().length >= 10 && !prohibitedMatch && riskConfirmed && (!photoPreview || photoAcknowledged);
-  const logisticsValid = timeValid && durationValid && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady;
+  const scopeValid = riskConfirmed && (!photoPreview || photoAcknowledged);
+  const logisticsValid = startTimeSlots.includes(startTime) && Boolean(privateAddress.trim()) && (mode === "community" || numericAmount >= 15) && safetyConfirmed && participationReady;
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
 
   useEffect(() => {
@@ -1117,30 +1354,41 @@ function PostScreen() {
     });
   }, [published, step]);
 
+  // The rail holds a full day of slots, so bring the chosen one into view rather
+  // than leaving the requester looking at 7:00 AM.
+  useEffect(() => {
+    if (step !== 3) return;
+    requestAnimationFrame(() => selectedTimeRef.current?.scrollIntoView({ block: "nearest", inline: "center" }));
+  }, [step]);
+
   const publish = () => {
-    if (!copyValid || !logisticsValid) return;
+    if (!scopeValid || !logisticsValid) return;
     const created: Task = {
       id: `posted-${Date.now()}`,
-      title: title.trim(),
-      description: details.trim(),
+      title: listing.title,
+      description: listing.details,
       mode,
       earning: mode === "community" ? undefined : numericAmount,
-      distance: "1.2 mi",
+      coords: {
+        lat: listingArea.center.lat + Math.sin(ownedTasks.length * 2.4) * 0.004,
+        lng: listingArea.center.lng + Math.cos(ownedTasks.length * 2.4) * 0.004,
+      },
+      areaId: listingArea.id,
       area: profileArea,
       time: `${dateChoice} · ${startTime}`,
-      duration,
-      icon: Wrench,
-      category,
-      included,
-      excluded,
-      completion,
+      duration: listing.duration,
+      icon: template.icon,
+      category: template.category,
+      included: listing.included,
+      excluded: listing.excluded,
+      completion: listing.completion,
       privateAddress,
       photo: photoPreview || undefined,
       requesterName: persona === "youth" ? "Sam K." : persona === "guardian" ? "Maya K." : "Alex K.",
       requesterInitials: persona === "youth" ? "SK" : persona === "guardian" ? "MK" : "AK",
       requesterAvatar: profilePhotos[persona] || undefined,
       ownerPersona: persona,
-      youthEligible: persona === "youth",
+      youthEligible: template.youthEligible,
     };
     setPostedTask(created);
     setOwnedTasks((current) => [created, ...current]);
@@ -1163,7 +1411,7 @@ function PostScreen() {
             <h1>Your task is posted.</h1>
             <p>It is visible around {profileArea} with an approximate public location.</p>
             <div className="truth-card"><Info size={22} /><div><strong>Prototype only</strong><span>No payment, private address, or live notification was created.</span></div></div>
-            <TaskPreview title={title} details={details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={duration} />
+            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} />
             <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { setPostDraft(initialPostDraft); setPublished(false); setStep(0); }}>Post another task</button></div>
           </section>
         </div>
@@ -1175,8 +1423,8 @@ function PostScreen() {
     <MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded">
         <PageTitle eyebrow="Share a small task" title="What kind of help fits?" subtitle="Choose the arrangement first. Micro keeps the same dignity and clarity in every mode." />
-        <StepRail current={step} total={3} />
-        <span className="sr-only" role="status" aria-live="polite">Step {step + 1} of 4</span>
+        <StepRail current={step} total={4} />
+        <span className="sr-only" role="status" aria-live="polite">Step {step + 1} of 5</span>
         {step > 0 ? <div className="post-mode-strip" data-mode={mode}><span className="mode-badge">{mode === "community" ? <HandHeart size={14} weight="fill" /> : mode === "sponsored" ? <Sparkle size={14} weight="fill" /> : <Tag size={14} weight="fill" />} {modeMeta[mode].label}</span><button className="text-button" onClick={() => goStep(0)}>Change</button></div> : null}
         {!accessTermsAccepted ? <div className="test-mode-banner"><Warning size={19} /><span><strong>Participation paused:</strong> accept the test terms in Profile before publishing.</span></div> : null}
 
@@ -1193,55 +1441,114 @@ function PostScreen() {
                 </button>
               );
             })}
-            <button className="primary-button" onClick={() => goStep(1)}>Describe the task <ArrowRight size={18} /></button>
+            <button className="primary-button" onClick={() => goStep(1)}>Choose a task <ArrowRight size={18} /></button>
             {draftChanged ? <button className="text-button discard-draft" onClick={() => { keyboard.hide(); setPostDraft(initialPostDraft); setStep(0); }}>Discard changes &amp; restore example</button> : null}
           </section>
         ) : null}
 
         {step === 1 ? (
-          <section className="form-section">
-            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Describe the task</h2>
-            <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Category</legend><div className="segmented-row">{["Yard & garden", "Home help", "Errands"].map((value) => <button key={value} aria-pressed={category === value} data-active={category === value ? "true" : "false"} onClick={() => { keyboard.hide(); setCategory(value); }}>{value}</button>)}</div></fieldset>
-            <label className="field-label-block">Task title<KeyboardInput value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <label className="field-label-block">What should the helper do?<KeyboardTextarea rows={4} value={details} onChange={(event) => setDetails(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <label className="field-label-block">Included in the task<KeyboardTextarea rows={3} value={included} onChange={(event) => setIncluded(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <label className="field-label-block">Not included<KeyboardTextarea rows={3} value={excluded} onChange={(event) => setExcluded(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <label className="field-label-block">How is completion confirmed?<KeyboardTextarea rows={3} value={completion} onChange={(event) => setCompletion(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <button className="choice-row risk-confirm" aria-pressed={riskConfirmed} data-selected={riskConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setRiskConfirmed((current) => !current); }}><span><strong>Category safety check</strong><small>{riskCopy}</small></span><span className="checkbox">{riskConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
-            <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
-            <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> Photos are optional. The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button>
-            {!copyValid ? <p className="form-error" role="alert">{prohibitedMatch ? "This scope may involve prohibited high-risk work. Remove electrical, gas, roof, ladder, medical-care, childcare, or weapon-related work." : !riskConfirmed ? "Review and confirm the category-specific safety boundary before continuing." : photoPreview && !photoAcknowledged ? "Review the photo privacy guidance before continuing with this image." : "Add a clear title, scope, exclusions, and completion check before continuing."}</p> : null}
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(0)}>Back</button><button className="primary-button" disabled={!copyValid} onClick={() => goStep(2)}>Set time &amp; pay</button></div>
+          <section className="form-section catalog-section">
+            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Choose the task</h2>
+            <p className="catalog-intro">Micro lists reviewed neighborhood tasks only. Pick the closest match and you will set the specifics next.</p>
+            <div className="catalog-search"><MagnifyingGlass size={19} /><KeyboardInput value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onBlur={() => keyboard.hide()} placeholder={`Search ${modePool.length} tasks`} aria-label="Search the task catalog" />{catalogQuery ? <button className="catalog-search-clear" aria-label="Clear search" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}><X size={15} weight="bold" /></button> : null}</div>
+            <Carousel ariaLabel="Task categories" className="catalog-category-rail" contentClassName="catalog-category-track">
+              <button className="catalog-category" aria-pressed={browseCategoryId === "all"} data-active={browseCategoryId === "all" ? "true" : "false"} onClick={() => setBrowseCategoryId("all")}>All <span>{modePool.length}</span></button>
+              {catalogCategories.filter((entry) => categoryCounts[entry.id]).map((entry) => {
+                const CategoryIcon = entry.icon;
+                return <button key={entry.id} className="catalog-category" aria-pressed={browseCategoryId === entry.id} data-active={browseCategoryId === entry.id ? "true" : "false"} onClick={() => setBrowseCategoryId(entry.id)}><CategoryIcon size={16} weight="fill" /> {entry.label} <span>{categoryCounts[entry.id]}</span></button>;
+              })}
+            </Carousel>
+            <p className="catalog-count">{results.length} {results.length === 1 ? "task" : "tasks"}{browseCategoryId === "all" && !catalogQuery ? " · most requested first" : ""}</p>
+            {results.length ? (
+              <div className="catalog-results">
+                {results.map((entry) => {
+                  const RowIcon = entry.icon;
+                  return (
+                    <button key={entry.id} className="catalog-row" data-selected={entry.id === templateId ? "true" : "false"} onClick={() => selectTemplate(entry)}>
+                      <span className="catalog-row-icon"><RowIcon size={21} weight="duotone" /></span>
+                      <span className="catalog-row-body">
+                        <strong>{entry.title}</strong>
+                        <small>{entry.category} · about {entry.minutes} min{mode === "community" ? "" : ` · from $${Math.max(15, entry.pay)}`}</small>
+                      </span>
+                      {entry.youthEligible ? <span className="catalog-row-flag">Youth OK</span> : null}
+                      <ArrowRight size={16} weight="bold" />
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-state catalog-empty">
+                <MagnifyingGlass size={28} aria-hidden="true" />
+                <h2>No task matches that</h2>
+                <p>Micro only publishes tasks that have been reviewed for scope and safety, so there is nothing to write in by hand. Try another word, or browse a category.</p>
+                <button className="text-button" onClick={() => { keyboard.hide(); setCatalogQuery(""); setBrowseCategoryId("all"); }}>Clear search</button>
+              </div>
+            )}
+            <p className="catalog-selected-note">Selected: <strong>{template.title}</strong></p>
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(0)}>Back</button><button className="primary-button" onClick={() => goStep(2)}>Continue <ArrowRight size={18} /></button></div>
           </section>
         ) : null}
 
         {step === 2 ? (
           <section className="form-section">
-            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set time, place, and pay</h2>
-            <div className="section-label">When</div>
-            <div className="segmented-row">{(["Tomorrow", "Saturday", "Flexible"] as const).map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setDateChoice(value); }}>{value}</button>)}</div>
-            <div className="two-fields"><label className="field-label-block">Start time<KeyboardInput value={startTime} onChange={(event) => setStartTime(event.target.value)} onBlur={() => keyboard.hide()} /></label><label className="field-label-block">Duration<KeyboardInput value={duration} onChange={(event) => setDuration(event.target.value)} onBlur={() => keyboard.hide()} /></label></div>
-            <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
-            <div className="privacy-choice"><div><span className="mini-label">Shown publicly</span><strong>{profileArea}, about 1.2 mi</strong><small>Private after match: {privateAddress || "Address required"}</small></div><ShieldCheck size={23} weight="fill" /></div>
-            {mode !== "community" ? <label className="field-label-block">Helper receives<div className="money-field"><CurrencyDollar size={21} /><KeyboardInput value={amount} inputMode="numeric" onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} onBlur={() => keyboard.hide()} /></div></label> : <div className="notice-card"><HandHeart size={22} /><div><strong>Volunteer — no payment</strong><span>This task will never display an earning amount.</span></div></div>}
-            <div className="fair-pay-card"><ShieldCheck size={22} weight="fill" /><div><strong>{mode === "community" ? "Clear time commitment" : `~$${hourlyEquivalent}/hour equivalent`}</strong><span>{mode === "sponsored" ? "Sponsor pays; recipient total is $0." : mode === "paid" ? "Helper earnings are shown before they accept. The prototype minimum is $15." : "Scope and duration remain visible before a volunteer commits."}</span></div></div>
-            {mode !== "community" ? <div className="fee-breakdown four-fees"><div><span>Helper receives</span><strong>${numericAmount}</strong></div><div><span>Platform</span><strong>${platformFee}</strong></div><div><span>Est. processing</span><strong>${processingFee}</strong></div><div><span>{mode === "sponsored" ? "Sponsor total" : "Requester total"}</span><strong>${numericAmount + platformFee + processingFee}</strong></div></div> : null}
-            <button className="choice-row safety-confirm" aria-pressed={safetyConfirmed} data-selected={safetyConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setSafetyConfirmed((current) => !current); }}><span><strong>I reviewed safety and cancellation terms</strong><small>Changes, cancellations, and issues stay in the task thread.</small></span><span className="checkbox">{safetyConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
-            {!logisticsValid ? <p className="form-error" role="alert">Use a time like 10:00 AM, a duration from 15–240 min, and a private address{mode === "community" ? "" : ", plus a helper amount of at least $15"}. Confirm the terms and keep participation access active.</p> : null}
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(1)}>Back</button><button className="primary-button" disabled={!logisticsValid} onClick={() => goStep(3)}>Preview</button></div>
+            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set the specifics</h2>
+            <article className="chosen-task">
+              <span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span>
+              <div><strong>{template.title}</strong><small>{template.category}</small></div>
+              <button className="text-button" onClick={() => goStep(1)}>Change</button>
+            </article>
+            {template.options.length ? template.options.map((control) => (
+              <fieldset key={control.id} className="choice-fieldset compact-choice-fieldset">
+                <legend>{control.label}</legend>
+                <div className="segmented-row" data-choices={control.choices.length}>{control.choices.map((choice) => <button key={choice.id} aria-pressed={selections[control.id] === choice.id} data-active={selections[control.id] === choice.id ? "true" : "false"} onClick={() => setChoice(control.id, choice.id)}>{choice.label}</button>)}</div>
+              </fieldset>
+            )) : <p className="catalog-intro">This task has no options to set — the scope below is the whole job.</p>}
+            <section className="composed-listing">
+              <p className="eyebrow">What neighbors will read</p>
+              <h3>{listing.title}</h3>
+              <p>{listing.details}</p>
+              <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /></div>
+            </section>
+            <div className="derived-facts"><div><span>Suggested duration</span><strong>{listing.duration}</strong></div>{mode !== "community" ? <div><span>Suggested pay</span><strong>${listing.suggestedPay}</strong></div> : <div><span>Compensation</span><strong>Volunteer</strong></div>}</div>
+            <button className="choice-row risk-confirm" aria-pressed={riskConfirmed} data-selected={riskConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setRiskConfirmed((current) => !current); }}><span><strong>{template.category} safety boundary</strong><small>{template.boundary}</small></span><span className="checkbox">{riskConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
+            <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
+            <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> Photos are optional. The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button>
+            {!scopeValid ? <p className="form-error" role="alert">{!riskConfirmed ? "Confirm the safety boundary for this task before continuing." : "Review the photo privacy guidance before continuing with this image."}</p> : null}
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(1)}>Back</button><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(3)}>Set time &amp; pay</button></div>
           </section>
         ) : null}
 
         {step === 3 ? (
           <section className="form-section">
+            <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Set time, place, and pay</h2>
+            <div className="section-label">When</div>
+            <div className="segmented-row">{(["Tomorrow", "Saturday", "Flexible"] as const).map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setDateChoice(value); }}>{value}</button>)}</div>
+            <div className="section-label">Start time · <span className="section-label-value">{startTime}</span></div>
+            <Carousel ariaLabel="Start time" className="time-rail" contentClassName="time-rail-track">
+              {startTimeSlots.map((slot) => <button key={slot} ref={slot === startTime ? selectedTimeRef : undefined} className="time-chip" aria-pressed={startTime === slot} data-active={startTime === slot ? "true" : "false"} onClick={() => setStartTime(slot)}>{slot}</button>)}
+            </Carousel>
+            <div className="derived-facts"><div><span>Duration</span><strong>{listing.duration}</strong></div><div><span>Set by</span><strong>The task you picked</strong></div></div>
+            <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
+            <div className="privacy-choice"><div><span className="mini-label">Shown publicly</span><strong>{profileArea}</strong><small>Approximate neighborhood only · private after match: {privateAddress || "Address required"}</small></div><ShieldCheck size={23} weight="fill" /></div>
+            {mode !== "community" ? <label className="field-label-block">Helper receives<div className="money-field"><CurrencyDollar size={21} /><KeyboardInput value={amount} inputMode="numeric" onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} onBlur={() => keyboard.hide()} /></div>{numericAmount !== listing.suggestedPay ? <button className="text-button" onClick={() => { keyboard.hide(); setAmount(String(listing.suggestedPay)); }}>Use the suggested ${listing.suggestedPay}</button> : null}</label> : <div className="notice-card"><HandHeart size={22} /><div><strong>Volunteer — no payment</strong><span>This task will never display an earning amount.</span></div></div>}
+            <div className="fair-pay-card"><ShieldCheck size={22} weight="fill" /><div><strong>{mode === "community" ? "Clear time commitment" : `~$${hourlyEquivalent}/hour equivalent`}</strong><span>{mode === "sponsored" ? "Sponsor pays; recipient total is $0." : mode === "paid" ? `Helper earnings are shown before they accept. This task suggests $${listing.suggestedPay} for its scope; the prototype minimum is $15.` : "Scope and duration remain visible before a volunteer commits."}</span></div></div>
+            {mode !== "community" ? <div className="fee-breakdown four-fees"><div><span>Helper receives</span><strong>${numericAmount}</strong></div><div><span>Platform</span><strong>${platformFee}</strong></div><div><span>Est. processing</span><strong>${processingFee}</strong></div><div><span>{mode === "sponsored" ? "Sponsor total" : "Requester total"}</span><strong>${numericAmount + platformFee + processingFee}</strong></div></div> : null}
+            <button className="choice-row safety-confirm" aria-pressed={safetyConfirmed} data-selected={safetyConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setSafetyConfirmed((current) => !current); }}><span><strong>I reviewed safety and cancellation terms</strong><small>Changes, cancellations, and issues stay in the task thread.</small></span><span className="checkbox">{safetyConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
+            {!logisticsValid ? <p className="form-error" role="alert">Pick a start time and add a private address{mode === "community" ? "" : ", plus a helper amount of at least $15"}. Confirm the terms and keep participation access active.</p> : null}
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Back</button><button className="primary-button" disabled={!logisticsValid} onClick={() => goStep(4)}>Preview</button></div>
+          </section>
+        ) : null}
+
+        {step === 4 ? (
+          <section className="form-section">
             <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Review the public listing</h2>
             <p className="eyebrow">Public preview</p>
-            <TaskPreview title={title} details={details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={duration} />
+            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} />
             {photoPreview ? <figure className="post-photo-preview final-photo"><img src={photoPreview} alt="Task photo included in the public preview" /><figcaption>Public task photo · reviewed for private details</figcaption></figure> : null}
-            <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={included} /><ReviewRow icon={X} title="Not included" text={excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
-            <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea} · about 1.2 mi</strong><small>{modeMeta[mode].label} · {category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{persona === "youth" ? "Youth Mode review required" : "Adults; youth only if policy marks this task eligible"}</strong><small>No eligibility is inferred from the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
-            <div className="truth-card"><ShieldCheck size={22} /><div><strong>Your exact address stays private</strong><span>Only the neighborhood and approximate distance appear before a protected match.</span></div></div>
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!copyValid || !logisticsValid} onClick={publish}>Publish task</button></div>
+            <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
+            <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea}</strong><small>{modeMeta[mode].label} · {template.category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{template.youthEligible ? "Adults and Youth Mode helpers" : "Adults only"}</strong><small>Set by the task you picked, not by the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
+            <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(3)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid} onClick={publish}>Publish task</button></div>
           </section>
         ) : null}
       </div>
@@ -1249,11 +1556,12 @@ function PostScreen() {
   );
 }
 
-function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 10 AM", duration = "60 min" }: { title: string; details: string; mode: TaskMode; amount: string; area: string; time?: string; duration?: string }) {
+function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 10 AM", duration = "60 min", icon = Wrench }: { title: string; details: string; mode: TaskMode; amount: string; area: string; time?: string; duration?: string; icon?: Icon }) {
   const ModeIcon = modeMeta[mode].icon;
+  const TaskIcon = icon;
   return (
     <article className="task-card preview-card" data-mode={mode} data-selected="true">
-      <div className="task-card-top"><span className="task-icon"><Wrench size={23} weight="bold" /></span><div className="task-title-block"><div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[mode].label}</div><h2>{title}</h2></div>{mode !== "community" ? <div className="earning"><strong>${amount || "0"}</strong><span>You earn</span></div> : null}</div>
+      <div className="task-card-top"><span className="task-icon"><TaskIcon size={23} weight="bold" /></span><div className="task-title-block"><div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[mode].label}</div><h2>{title}</h2></div>{mode !== "community" ? <div className="earning"><strong>${amount || "0"}</strong><span>You earn</span></div> : null}</div>
       <p className="task-description">{details}</p>
       <div className="task-facts"><span><MapPin size={17} /> {area}</span><span><CalendarBlank size={17} /> {time}</span><span><Clock size={17} /> {duration}</span></div>
     </article>
@@ -1823,7 +2131,8 @@ const profileInfoTitles: Record<ProfileInfoKind, string> = {
 
 function ProfileScreen() {
   const flow = useFlow();
-  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileArea, setProfileArea, profilePhotos, setProfilePhotos } = useMicro();
+  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileAreaId, setProfileAreaId, profilePhotos, setProfilePhotos } = useMicro();
+  const profileArea = areaById(profileAreaId).label;
   const [areaOpen, setAreaOpen] = useState(false);
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoError, setPhotoError] = useState("");
@@ -1868,7 +2177,7 @@ function ProfileScreen() {
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
         <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this demo profile"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
         <div className="demo-card"><Info size={20} /><div><strong>UI prototype</strong><span>Payments, identity, maps, messages, and task data are realistic local fixtures—not live services.</span></div></div>
-      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{["East San José", "Alum Rock", "Little Portugal"].map((value) => <button key={value} className="choice-row" aria-pressed={profileArea === value} data-selected={profileArea === value ? "true" : "false"} onClick={() => { setProfileArea(value); setAreaOpen(false); }}><span>{value}</span>{profileArea === value ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
+      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
 }
 

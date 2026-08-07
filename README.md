@@ -4,7 +4,7 @@ Micro is a warm, trust-first mobile prototype for arranging small neighborhood t
 
 ## What is included
 
-- Nearby discovery with search, approximate-area controls, filters, map/list coordination, and paid, Community Help, and Sponsored modes.
+- Nearby discovery across Oakland and Alameda with search, a bounded approximate-area picker, filters, map/list coordination, and paid, Community Help, and Sponsored modes.
 - Detailed task scope, exclusions, completion criteria, requester trust, fair-pay totals, privacy-safe media, save, and report states.
 - A four-step posting flow with category risk review, privacy guidance, time/pay validation, private/public address boundaries, and a final listing review.
 - Role-aware Activity journeys for start PINs, completion evidence, requester confirmation, simulated payout, cancellations, no-shows, support pauses, service hours, and structured reviews.
@@ -31,15 +31,19 @@ npm run dev -- --host 127.0.0.1 --port 4174
 
 Then open `http://127.0.0.1:4174/`.
 
-## Verify
+### Map
+
+The Nearby map uses the Google **Maps JavaScript API**. Copy `.env.example` to `.env.local` and fill it in:
 
 ```bash
-npm run check:runtime
-npm run build
-npm run test:sites
+cp .env.example .env.local
+# VITE_GOOGLE_MAPS_API_KEY=...
+# VITE_GOOGLE_MAPS_MAP_ID=...
 ```
 
-The visual QA record and final reference comparisons are in [`design-qa.md`](./design-qa.md) and [`qa/`](./qa/).
+In Google Cloud Console: enable **Maps JavaScript API**, restrict the key to HTTP referrers plus that API, and create a **Map ID** (type JavaScript) — Advanced Markers require one. The key is bundled into the client, so those restrictions are the only thing protecting it. Without a key, or with the API disabled, the app still runs and the map area says so plainly instead of showing an empty frame.
+
+Areas are a fixed enum — `Oakland & Alameda`, `Downtown & Lake Merritt`, `Temescal & Rockridge`, `Fruitvale & San Antonio`, `West Oakland & Jack London`, `Alameda Island`, and `Island of Montréal`. Each carries a centre, a default zoom, min/max zoom, and a pan fence, so the map cannot drift out of the chosen area. Distances are computed from the viewer's own area; there is no geocoding or autocomplete traffic.
 
 ## Prototype boundary
 

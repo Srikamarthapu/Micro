@@ -9,3 +9,7 @@ qa/*
 !qa/micro-iphone-final.png
 !qa/micro-pixel-final.png
 !qa/comparison-final.png
+
+# Local secrets (Maps key). Never commit.
+.env.local
+.env*.local
