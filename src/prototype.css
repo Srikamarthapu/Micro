@@ -418,7 +418,9 @@
 .nav-padded { padding-bottom: 122px; }
 .route-page { padding-top: 24px; }
 .route-bottom-pad { padding-bottom: 50px; }
-.with-actionbar { padding-bottom: 112px; }
+/* Clears the action bar (button + its padding + the bottom safe area) with room
+   to spare, so the last card never grazes the bar. */
+.with-actionbar { padding-bottom: calc(var(--mobile-safe-area-height, var(--device-safe-area-bottom, 34px)) + 108px); }
 
 .page-title { margin-bottom: 18px; }
 .page-title h1 { margin: 0; font-size: 39px; line-height: 1; }
@@ -592,7 +594,12 @@
 .avatar.rosa { background: #f1e7fb; color: var(--micro-purple); }
 .community-avatar { background: #e8f1fc; color: var(--micro-blue); }
 .privacy-note { margin-top: 18px; }
-.route-actionbar { position: absolute; z-index: 10; right: 0; bottom: 0; left: 0; padding: 12px 18px calc(var(--mobile-safe-area-height) + 12px); border-top: 1px solid rgba(216, 208, 196, 0.8); background: rgba(251, 247, 239, 0.97); backdrop-filter: blur(12px); }
+/* This bar is a sibling of MobileScroll, so it sits outside .mobile-page and
+   cannot see --mobile-safe-area-height. Without the fallback the calc() is
+   invalid, Chrome drops the whole padding shorthand, and the button lands under
+   the home indicator. --device-safe-area-bottom is in scope here. */
+.route-actionbar { position: absolute; z-index: 10; right: 0; bottom: 0; left: 0; padding: 14px 18px calc(var(--mobile-safe-area-height, var(--device-safe-area-bottom, 34px)) + 14px); border-top: 1px solid rgba(216, 208, 196, 0.8); background: rgba(251, 247, 239, 0.97); backdrop-filter: blur(12px); }
+.mobile-app-viewport[data-platform="android"] .route-actionbar { padding-bottom: 16px; }
 .route-actionbar .primary-button { width: 100%; }
 
 .review-view h1,
