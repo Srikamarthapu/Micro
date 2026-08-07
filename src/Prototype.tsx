@@ -2027,7 +2027,6 @@ function NearbyScreen() {
       <MobileScroll className="app-screen nearby-scroll">
         <div className="nearby-page" data-sheet-snap={sheetSnap} data-map-expanded={mapExpanded ? "true" : "false"}>
           <header className="brand-row">
-            <span className="wordmark">Micro</span>
             <button className="location-button" onClick={() => setLocationOpen(true)}>
               <MapPin size={18} weight="fill" aria-hidden="true" />
               <span>{activeArea.label}</span>
