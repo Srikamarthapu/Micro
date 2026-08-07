@@ -1,5 +1,6 @@
 import { CalendarBlank, HandHeart, House, Leaf, Package, Scissors, Sparkle, Tag, UsersThree, Wrench, type Icon } from "@phosphor-icons/react";
 import { composeListing, defaultSelections, taskTemplates, templateById } from "../taskCatalog";
+import { startLabel, startMoment } from "./schedule";
 import type { PostDraft, Task, TaskMode } from "./types";
 
 /**
@@ -7,6 +8,20 @@ import type { PostDraft, Task, TaskMode } from "./types";
  * prototype has something to show before anyone has posted; a real listing from
  * Supabase flows through exactly the same `Task` shape.
  */
+
+/** The clock these listings are seeded against, read once per page load. */
+const seedNow = new Date();
+
+/**
+ * A fixture's start, resolved against that clock instead of frozen into a
+ * string. "Saturday" means the next Saturday and "Today" rolls forward once the
+ * slot is too close, so a seeded listing can never open already expired.
+ */
+function starting(dateChoice: string, slot: string): { time: string; startsAt: Date } {
+  const startsAt = startMoment(seedNow, dateChoice, slot);
+  if (!startsAt) throw new Error(`Fixture has no resolvable start: ${dateChoice} · ${slot}`);
+  return { time: startLabel(seedNow, startsAt, slot), startsAt };
+}
 
 export const exampleTemplate = templateById("yard-lavender") ?? taskTemplates[0];
 export const exampleSelections = defaultSelections(exampleTemplate);
@@ -40,7 +55,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.7792, lng: -122.2281 },
     areaId: "fruitvale",
     area: "Fruitvale",
-    time: "Today · 3:00 PM",
+    ...starting("Today", "3:00 PM"),
     duration: "60–90 min",
     icon: Leaf,
     category: "Yard & garden",
@@ -58,7 +73,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.8064, lng: -122.2934 },
     areaId: "westoak",
     area: "West Oakland",
-    time: "Tomorrow · 10:00 AM",
+    ...starting("Tomorrow", "10:00 AM"),
     duration: "20–30 min",
     icon: Package,
     category: "Home help",
@@ -74,7 +89,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.8362, lng: -122.2603 },
     areaId: "temescal",
     area: "Temescal",
-    time: "Saturday · 11:00 AM",
+    ...starting("Saturday", "11:00 AM"),
     duration: "About 45 min",
     icon: UsersThree,
     category: "Tech help",
@@ -91,7 +106,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.7861, lng: -122.2401 },
     areaId: "fruitvale",
     area: "San Antonio",
-    time: "Saturday · 9:30 AM",
+    ...starting("Saturday", "9:30 AM"),
     duration: "60 min",
     icon: HandHeart,
     youthEligible: true,
@@ -109,7 +124,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.8442, lng: -122.2513 },
     areaId: "temescal",
     area: "Rockridge",
-    time: "Sunday · 9:00 AM",
+    ...starting("Sunday", "9:00 AM"),
     duration: "45–60 min",
     icon: Scissors,
     category: "Yard & garden",
@@ -125,7 +140,7 @@ export const tasks: Task[] = [
     coords: { lat: 37.7649, lng: -122.2447 },
     areaId: "alameda",
     area: "Alameda",
-    time: "Sunday · 1:00 PM",
+    ...starting("Sunday", "1:00 PM"),
     duration: "About 30 min",
     icon: House,
     category: "Community & mutual aid",
@@ -142,7 +157,7 @@ export const tasks: Task[] = [
     coords: { lat: 45.5231, lng: -73.5803 },
     areaId: "montreal",
     area: "Le Plateau-Mont-Royal",
-    time: "Tomorrow · 8:00 AM",
+    ...starting("Tomorrow", "8:00 AM"),
     duration: "30–45 min",
     icon: House,
     category: "Home help",
@@ -158,7 +173,7 @@ export const tasks: Task[] = [
     coords: { lat: 45.5232, lng: -73.6002 },
     areaId: "montreal",
     area: "Mile End",
-    time: "Sunday · 10:00 AM",
+    ...starting("Sunday", "10:00 AM"),
     duration: "About 40 min",
     icon: UsersThree,
     category: "Community & mutual aid",
@@ -177,7 +192,7 @@ export const sponsoredFixtureTask: Task = {
   coords: { lat: 37.7703, lng: -122.2534 },
   areaId: "alameda",
   area: "Alameda West End",
-  time: "Saturday · 2:00 PM",
+  ...starting("Saturday", "2:00 PM"),
   duration: "About 45 min",
   icon: Package,
   category: "Errands & pickup",
@@ -187,9 +202,9 @@ export const sponsoredFixtureTask: Task = {
 };
 
 export const pastThreadTasks: Task[] = [
-  { ...tasks[0], id: "leaves-history", time: "Completed July 28" },
-  { ...tasks[1], id: "boxes-history", time: "Completed July 21" },
-  { ...tasks[2], id: "tablet-history", time: "Completed July 16" },
+  { ...tasks[0], id: "leaves-history", time: "Completed July 28", startsAt: undefined },
+  { ...tasks[1], id: "boxes-history", time: "Completed July 21", startsAt: undefined },
+  { ...tasks[2], id: "tablet-history", time: "Completed July 16", startsAt: undefined },
 ];
 
 export const modeMeta: Record<

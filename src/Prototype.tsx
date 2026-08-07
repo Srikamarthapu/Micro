@@ -78,7 +78,7 @@ import {
 } from "./taskCatalog";
 import { supabase, supabaseConfig } from "./supabase";
 import { areaById, areaIdFromServiceArea, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
-import { dateChoicesFor, slotsRemainingToday, startTimeSlots } from "./micro/schedule";
+import { dateChoicesFor, hasExpired, slotsRemainingToday, startMoment, startTimeSlots } from "./micro/schedule";
 import { appendTaskEvent, emptyCapabilities, emptyTaskReview, type AccountType, type AuthActionResult, type AuthCapabilities, type AuthOrganization, type AuthProfile, type CommunityStage, type CompletionSubmission, type MessageItem, type OrganizationVerificationStatus, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type SignUpInput, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./micro/types";
 import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
 
@@ -1502,6 +1502,13 @@ function NearbyScreen() {
   // until someone picks the specific kinds of work they want.
   const [categories, setCategories] = useState<string[]>([]);
   const [when, setWhen] = useState<"any" | "today" | "weekend">("any");
+  // Ticks so a listing leaves the list the minute its start passes, instead of
+  // waiting for the next navigation to notice.
+  const [browsedAt, setBrowsedAt] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setBrowsedAt(new Date()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [radius, setRadius] = useState<1 | 3>(3);
   const [youthOnly, setYouthOnly] = useState(false);
   const [sheetSnap, setSheetSnap] = useState<"collapsed" | "half" | "expanded">("half");
@@ -1518,7 +1525,7 @@ function NearbyScreen() {
   // the commitment is the first thing you see and it is obvious why nothing
   // else can be accepted yet.
   const activeCommitment = taskPool.find((task) => acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id));
-  const allTasks = taskPool.filter((task) => !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
+  const allTasks = taskPool.filter((task) => !hasExpired(task, browsedAt) && !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
   const selected = allTasks.find((task) => task.id === selectedTaskId) ?? allTasks[0];
   const visibleTasks = allTasks.filter(
     (task) =>
@@ -1526,7 +1533,7 @@ function NearbyScreen() {
       (!categories.length || (task.category ? categories.includes(task.category) : false)) &&
       (areaId === "all" || task.areaId === areaId) &&
       distanceMiles(activeArea.center, task.coords) <= radius &&
-      (when === "any" || (when === "today" ? task.time.startsWith("Today") : /Saturday|Sunday/.test(task.time))) &&
+      (when === "any" || (when === "today" ? task.time.startsWith("Today") : Boolean(task.startsAt && (task.startsAt.getDay() === 0 || task.startsAt.getDay() === 6)))) &&
       (!youthOnly || task.youthEligible) &&
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
@@ -2271,6 +2278,7 @@ function PostScreen() {
       areaId: listingArea.id,
       area: profileArea,
       time: `${dateChoice} · ${startTime}`,
+      startsAt: startMoment(now, dateChoice, startTime),
       duration: listing.duration,
       icon: template.icon,
       category: template.category,
@@ -2732,6 +2740,10 @@ function NotificationsScreen() {
   // A job notice opens that job, not just the tab it lives on.
   const openJob = (task: Task) => { setSelectedTaskId(task.id); setActiveTab("nearby"); flow.replace(makeTaskScreen(task)); };
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
+  const markRead = useCallback((ids: string) => setSeenSpecialJobIds((current) => {
+    const next = ids.split(",").filter((id) => id && !current.includes(id));
+    return next.length ? [...current, ...next] : current;
+  }), [setSeenSpecialJobIds]);
   const actorTasks = [activeTask, communityTask].filter((task): task is Task => Boolean(task && actor && acceptedTaskActors[task.id] === actor && (acceptedTaskIds.includes(task.id) || taskEvents[task.id]?.length)));
   const lifecycleTask = actorTasks.find((task) => acceptedTaskIds.includes(task.id)) ?? [...actorTasks].sort((first, second) => (taskEvents[second.id]?.at(-1)?.id ?? 0) - (taskEvents[first.id]?.at(-1)?.id ?? 0))[0];
   const activeMatch = Boolean(lifecycleTask && acceptedTaskIds.includes(lifecycleTask.id));
@@ -2753,7 +2765,7 @@ function NotificationsScreen() {
   // The Nearby bell counts these, so the list has to name the same jobs: same
   // pool, same exclusions, or the badge would promise a notice that isn't here.
   const specialJobs = specialJobsFor([...remoteTasks, ...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId)
-    .filter((task) => !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester));
+    .filter((task) => !hasExpired(task, new Date()) && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester));
   for (const task of [...specialJobs].reverse()) {
     notices.unshift({
       icon: task.mode === "sponsored" ? Sparkle : ShieldCheck,
@@ -2764,6 +2776,9 @@ function NotificationsScreen() {
       task,
     });
   }
+  // Reading the list is what clears the bell.
+  const specialJobIds = specialJobs.map((task) => task.id).join(",");
+  useEffect(() => { markRead(specialJobIds); }, [markRead, specialJobIds]);
   if (youthApprovalTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: persona === "guardian" ? "Youth task needs your review" : "Guardian review requested", copy: "The exact pantry-task scope and time are ready for a task-specific decision.", time: "Now", tab: "profile" });
   else if (youthApprovedTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: "Youth task approved", copy: "Approval covers only this task, scope, and scheduled time; no assignment exists until acceptance.", time: "Now", tab: "profile" });
   else if (persona === "guardian" && guardianSupervisedTaskId) notices.unshift({ icon: ShieldCheck, title: "Youth task lifecycle", copy: guardianSupervisionStatus || "Sam’s task remains visible for task-specific guardian context.", time: "Now", tab: "profile" });
@@ -2777,7 +2792,7 @@ function NotificationsScreen() {
   if (lifecycleTask && moderationHolds[lifecycleTask.id]) notices.push({ icon: Warning, title: "Support review is open", copy: "Participant actions remain paused; only support authority can resolve the task report.", time: "Now", tab: "activity" });
   if (latestEvent) notices.push({ icon: CheckCircle, title: "Latest task record", copy: latestEvent.text, time: "Now", tab: "activity" });
   if (lifecycleTask?.mode !== "community" && (paidStage === "Payout released" || paidStage === "Completed")) notices.push({ icon: CurrencyDollar, title: "Test payout receipt", copy: "No real money moved; the simulated receipt remains in Payments & payouts.", time: "Now", tab: "profile" });
-  return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><p className="eyebrow">Seeded in-app events</p><h1>Useful, not noisy.</h1><p className="lead">Each notice names the task state and opens the place where someone can act.</p>{!notificationsEnabled ? <div className="truth-card" role="status"><Bell size={21} /><div><strong>Task notifications are paused</strong><span>Existing in-app records remain visible. No push delivery is connected.</span><button className="text-button" onClick={() => setNotificationsEnabled(true)}>Turn on for this profile</button></div></div> : null}<div className="notification-list">{notices.map(({ icon: NoticeIcon, title, copy, time, tab }) => <button key={`${title}·${copy}`} className="notification-row" onClick={() => openTab(tab)}><span className="notification-icon"><NoticeIcon size={20} weight="fill" /></span><span><strong>{title}</strong><small>{copy}</small></span><time>{time}</time></button>)}</div><div className="demo-card"><Info size={20} /><div><strong>Local fixtures only</strong><span>Push delivery and notification preferences need a live account and backend later.</span></div></div></div></MobileScroll>;
+  return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><p className="eyebrow">Seeded in-app events</p><h1>Useful, not noisy.</h1><p className="lead">Each notice names the task state and opens the place where someone can act.</p>{!notificationsEnabled ? <div className="truth-card" role="status"><Bell size={21} /><div><strong>Task notifications are paused</strong><span>Existing in-app records remain visible. No push delivery is connected.</span><button className="text-button" onClick={() => setNotificationsEnabled(true)}>Turn on for this profile</button></div></div> : null}<div className="notification-list">{notices.map(({ icon: NoticeIcon, title, copy, time, tab, task }) => <button key={`${title}·${copy}`} className="notification-row" onClick={() => task ? openJob(task) : openTab(tab)}><span className="notification-icon"><NoticeIcon size={20} weight="fill" /></span><span><strong>{title}</strong><small>{copy}</small></span><time>{time}</time></button>)}</div><div className="demo-card"><Info size={20} /><div><strong>Local fixtures only</strong><span>Push delivery and notification preferences need a live account and backend later.</span></div></div></div></MobileScroll>;
 }
 
 function makeCommunityJourneyScreen(task: Task): FlowScreen {
@@ -3435,7 +3450,7 @@ function ProfileInfoScreen({ kind }: { kind: ProfileInfoKind }) {
       ? { title: "Historical fixture · Youth task review", text: "$18 test payout record · July 28 · view-only guardian context" }
       : { title: "Historical fixture · Porch light timer", text: "$20 test payout · July 30 · completed fixture" };
   return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad profile-info-page">
-    {kind === "saved" ? <><p className="eyebrow">Come back when it fits</p><h1>Saved nearby tasks.</h1><p className="lead">{savedTasks.length ? `${savedTasks.length} ${savedTasks.length === 1 ? "task is" : "tasks are"} saved in this local session.` : "Saved state is kept only in this local session."}</p>{savedTasks.map((task) => { const unavailable = Boolean(task.listingPaused) || acceptedTaskIds.includes(task.id) || closedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]) || blockedThreadIds.includes(task.id) || blockedRequesterNames.includes(getTaskDetails(task).requester); return <div key={task.id} className="saved-task-wrap"><TaskCard task={task} unavailable={unavailable} onOpen={(selected) => { setSelectedTaskId(selected.id); setActiveTab("nearby"); flow.pop(); }} /><button className="text-button" onClick={() => setSavedTaskIds((current) => current.filter((id) => id !== task.id))}>Remove from saved</button></div>; })}{!savedTasks.length ? <div className="empty-state"><Tag size={34} weight="duotone" /><h2>No saved tasks yet.</h2><p>Use Save task on a nearby task detail to keep it here.</p></div> : null}</> : null}
+    {kind === "saved" ? <><p className="eyebrow">Come back when it fits</p><h1>Saved nearby tasks.</h1><p className="lead">{savedTasks.length ? `${savedTasks.length} ${savedTasks.length === 1 ? "task is" : "tasks are"} saved in this local session.` : "Saved state is kept only in this local session."}</p>{savedTasks.map((task) => { const unavailable = hasExpired(task, new Date()) || Boolean(task.listingPaused) || acceptedTaskIds.includes(task.id) || closedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]) || blockedThreadIds.includes(task.id) || blockedRequesterNames.includes(getTaskDetails(task).requester); return <div key={task.id} className="saved-task-wrap"><TaskCard task={task} unavailable={unavailable} onOpen={(selected) => { setSelectedTaskId(selected.id); setActiveTab("nearby"); flow.pop(); }} /><button className="text-button" onClick={() => setSavedTaskIds((current) => current.filter((id) => id !== task.id))}>Remove from saved</button></div>; })}{!savedTasks.length ? <div className="empty-state"><Tag size={34} weight="duotone" /><h2>No saved tasks yet.</h2><p>Use Save task on a nearby task detail to keep it here.</p></div> : null}</> : null}
     {kind === "payments" ? <><p className="eyebrow">Transparent test states</p><h1>Money stays clearly labeled.</h1><p className="lead">No card, bank account, charge, refund, or payout is connected.</p><section className="review-list"><ReviewRow icon={CurrencyDollar} title="Requester payment" text="No saved method · provider setup deferred" /><ReviewRow icon={ShieldCheck} title="Helper payout" text="No payout account · identity checks deferred" /></section><section className="detail-section"><h2>Simulated receipts</h2><div className="review-list">{receiptEvents.map(({ task, event }) => <ReviewRow key={`${task?.id ?? "session"}-${event.id}`} icon={ListChecks} title={task?.title ?? "Session task"} text={`${event.text} No real money moved.`} />)}<ReviewRow icon={ListChecks} title={historicalReceipt.title} text={`${historicalReceipt.text} · no real money moved`} />{!receiptEvents.length ? <ReviewRow icon={Info} title="No new session receipt" text="Complete a paid task flow to add a simulated receipt here." /> : null}</div></section><div className="truth-card"><Info size={21} /><div><strong>Production boundary</strong><span>A payment provider must own authorization, capture, refund, and payout state later.</span></div></div></> : null}
     {kind === "blocked" ? <><p className="eyebrow">Contact controls</p><h1>Blocked people.</h1><p className="lead">Blocking removes that requester’s open listings and disables their task composers in this session.</p>{blockedRequesterNames.length ? blockedRequesterNames.map((person) => { const task = uniqueTasks.find((item) => getTaskDetails(item).requester === person); return <article key={person} className="profile-info-card"><span className="avatar">{task ? getTaskDetails(task).initials : "LF"}</span><div><strong>{person}</strong><small>{task?.title ?? "Local fixture requester"}</small></div><button className="secondary-button" onClick={() => { setBlockedRequesterNames((current) => current.filter((item) => item !== person)); setBlockedThreadIds((current) => current.filter((id) => { const blockedTask = byId(id); return blockedTask ? getTaskDetails(blockedTask).requester !== person : false; })); }}>Unblock</button></article>; }) : <div className="empty-state"><ShieldCheck size={34} weight="duotone" /><h2>No one is blocked.</h2><p>Any local fixture you block from a task thread will appear here.</p></div>}</> : null}
     {kind === "support" ? <><p className="eyebrow">Safety without guesswork</p><h1>Help &amp; support.</h1><p className="lead">Reports pause the matching workflow in this prototype. For immediate danger, contact local emergency services.</p>{reportedTaskIds.length ? reportedTaskIds.map((id) => { const task = byId(id); return <article key={id} className="support-review-card"><div className="status-badge"><Warning size={14} weight="fill" /> Awaiting support</div><h2>{task?.title ?? "Task report"}</h2><p><strong>Reason:</strong> {reportReasons[id] ?? "Scope or safety concern"}</p><p>No live support ticket was created. Participants cannot clear their own report; support authority and resolution records require the deferred backend.</p></article>; }) : <div className="empty-state"><CheckCircle size={34} weight="duotone" /><h2>No open reports.</h2><p>Task reports and their workflow pauses will appear here.</p></div>}<section className="review-list support-guidance"><ReviewRow icon={ChatCircle} title="Keep details in Micro" text="Use the task thread for scope, arrival, and cancellation changes." /><ReviewRow icon={ShieldCheck} title="Protect private information" text="Do not share phone numbers, entry codes, payment details, or identity documents." /></section></> : null}

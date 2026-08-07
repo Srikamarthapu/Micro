@@ -94,6 +94,12 @@ export type Task = {
   areaId: AreaId;
   area: string;
   time: string;
+  /**
+   * The moment `time` names, so a listing can drop out of Nearby once its start
+   * has passed. Absent when the start is Flexible or came from a remote row
+   * that only carries a label.
+   */
+  startsAt?: Date;
   duration: string;
   icon: Icon;
   youthEligible?: boolean;

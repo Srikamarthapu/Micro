@@ -36,3 +36,49 @@ export function dateChoicesFor(now: Date): string[] {
   return [...(slotsRemainingToday(now).length ? ["Today"] : []), "Tomorrow", weekdayNames[later.getDay()], "Flexible"];
 }
 
+/** The slot, `offset` days from now, as a real moment. */
+function slotOn(now: Date, offset: number, slot: string): Date {
+  const day = new Date(now);
+  day.setDate(day.getDate() + offset);
+  day.setHours(0, slotMinutes(slot), 0, 0);
+  return day;
+}
+
+/**
+ * When a listing described as "Today"/"Tomorrow"/a weekday actually starts.
+ * Weekdays resolve to the next one still ahead, and a Today slot that no longer
+ * leaves enough notice rolls to the same slot tomorrow, so no listing can
+ * advertise a start time that has already gone by. Flexible has no moment.
+ */
+export function startMoment(now: Date, dateChoice: string, slot: string): Date | undefined {
+  if (dateChoice === "Tomorrow") return slotOn(now, 1, slot);
+  const weekday = weekdayNames.indexOf(dateChoice);
+  if (dateChoice !== "Today" && weekday < 0) return undefined;
+  const offset = weekday < 0 ? 0 : (weekday - now.getDay() + 7) % 7;
+  const start = slotOn(now, offset, slot);
+  if (start.getTime() - now.getTime() >= sameDayLeadMinutes * 60000) return start;
+  // Too close to give anyone notice, so it means the next day this choice can
+  // stand for: tomorrow for Today, a week on for a named weekday.
+  return slotOn(now, offset + (weekday < 0 ? 1 : 7), slot);
+}
+
+/**
+ * A listing whose start has gone by can no longer be accepted, so it drops out
+ * of Nearby rather than sitting there advertising a time in the past. Listings
+ * without a resolvable start (Flexible, or a remote row carrying only a label)
+ * never expire on their own.
+ */
+export function hasExpired(task: { startsAt?: Date }, now: Date): boolean {
+  return Boolean(task.startsAt && task.startsAt.getTime() <= now.getTime());
+}
+
+/** How that moment reads to whoever is browsing right now. */
+export function startLabel(now: Date, start: Date, slot: string): string {
+  const from = new Date(now);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(start);
+  to.setHours(0, 0, 0, 0);
+  const days = Math.round((to.getTime() - from.getTime()) / 86400000);
+  return `${days === 0 ? "Today" : days === 1 ? "Tomorrow" : weekdayNames[start.getDay()]} · ${slot}`;
+}
+
