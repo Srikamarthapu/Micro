@@ -2833,14 +2833,15 @@ function PostScreen() {
 
   return (
     <MobileScroll className="app-screen tab-scroll">
-      <div className="standard-page nav-padded">
+      <div className="standard-page nav-padded post-composer-page" data-task-selected={step > 0 ? "true" : "false"}>
         {step === 0 ? <PageTitle eyebrow="Share a small task" title="What do you need done?" subtitle="Search or browse the tasks neighbors already ask for. You will set the details, timing, and pay next." /> : null}
         <StepRail current={step} total={3} />
         <p className="step-caption" role="status" aria-live="polite">Step {step + 1} of 4 · {["Choose a task", "Set the specifics", "Arrangement, timing & pay", "Review"][step]}</p>
         {step > 0 ? (
           <article className="chosen-task">
-            <span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span>
-            <div className="chosen-task-body"><strong>{template.title}</strong><small>{template.category} · {listing.duration}</small></div>
+            <button className="chosen-task-back" aria-label="Back to task catalog" onClick={backToCatalog}><CaretLeft size={24} weight="bold" /></button>
+            <div className="chosen-task-title"><span className="chosen-task-icon">{(() => { const ChosenIcon = template.icon; return <ChosenIcon size={22} weight="duotone" />; })()}</span><div className="chosen-task-body"><strong>{template.title}</strong><small>{template.category} · {listing.duration}</small></div></div>
+            <span className="chosen-task-toolbar-spacer" aria-hidden="true" />
             <div className="chosen-task-side">
               {step === 1
                 ? <span className="chosen-task-price"><strong>${listing.suggestedPay}</strong><small>suggested</small></span>
@@ -2945,7 +2946,7 @@ function PostScreen() {
             <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
             <button className="photo-guidance photo-guidance-button" aria-pressed={photoAcknowledged} onClick={() => { keyboard.hide(); setPhotoAcknowledged((current) => !current); }}><ShieldCheck size={21} /><span><strong>{photoAcknowledged ? "Photo guidance reviewed" : "Review photo guidance"}</strong> Photos are optional. The selected preview stays in this local browser session.</span><span className="checkbox">{photoAcknowledged ? <Check size={14} weight="bold" /> : null}</span></button>
             {!scopeValid ? <p className="form-error" role="alert">{!riskConfirmed ? "Confirm the safety boundary for this task before continuing." : "Review the photo privacy guidance before continuing with this image."}</p> : null}
-            <div className="form-actions"><button className="secondary-button" onClick={backToCatalog}>Back</button><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(2)}>Timing &amp; pay</button></div>
+            <div className="form-actions form-actions-single"><button className="primary-button" disabled={!scopeValid} onClick={() => goStep(2)}>Timing &amp; pay</button></div>
           </section>
         ) : null}
 
