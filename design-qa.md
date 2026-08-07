@@ -1,48 +1,48 @@
-# Micro design QA
+# Micro design QA — map-only profile photo cleanup
 
-## Visual target
+## Evidence and target
 
-- Source of truth: `/Users/kamarthapusri/.codex/attachments/532c6efa-9a59-4b96-a512-abf06067913b/image-1.png`
-- Cropped reference: `/Volumes/Seagate /Micro/qa/reference-app.png`
-- Final full-frame capture: `/Volumes/Seagate /Micro/qa/micro-full-final.png`
-- Final iPhone capture: `/Volumes/Seagate /Micro/qa/micro-iphone-final.png`
-- Final Pixel capture: `/Volumes/Seagate /Micro/qa/micro-pixel-final.png`
-- Final side-by-side comparison: `/Volumes/Seagate /Micro/qa/comparison-final.png`
+- User-reported broken-state screenshot: `/var/folders/8w/t8c81jyx39s8szjv3wk71tt00000gn/T/codex-clipboard-d160f53f-3d4a-4b7a-a12b-7bc69489f710.png` (`546 × 1210`).
+- Current clean composition reference: `/Users/kamarthapusri/.codex/attachments/a19b791b-3306-475a-9e62-267a73f74008/image-3.png` (`929 × 668`).
+- Current implementation: `http://127.0.0.1:4174/` in the Codex in-app browser.
+- Intended calibrated device viewports: iPhone `393 × 852`; Pixel 10 `427 × 952`.
+- Primary state under review: Nearby map, half-height task sheet, selected task, persistent five-tab navigation.
 
-The final UI preserves the original warm parchment background, deep navy editorial type, teal primary action, restrained blue/orange/plum participation accents, quiet watercolor map, rounded task sheet, compact task card, and five-tab mobile navigation. The brighter alternate direction was not used.
+The clean reference is used for composition, breathing room, hierarchy, and restraint only. Micro retains its own civic task semantics and does not copy commerce content.
 
-## Visual review passes
+## Broken-state findings and repairs
 
-1. Replaced the early generic map treatment with a generated, product-specific watercolor neighborhood map using the original design as the strict style reference.
-2. Rebalanced the header, search, map, sheet, task card, badge, earning, and CTA proportions against a same-state reference/implementation comparison.
-3. Corrected the selected-card title/badge/earning overlap and verified the primary CTA remains visible above the Pixel bottom navigation.
-4. Rechecked both iPhone and Pixel device frames for cropping, readable hierarchy, target sizes, safe areas, and navigation clearance.
+1. **P0 — portrait imagery escaped its intended slots.** A broad avatar image rule expanded multiple profile photos into overlapping full-width layers. Avatar image sizing is now scoped to the map marker bubble and the explicit marker-photo preview in Profile. `PersonAvatar` is no longer used in task cards, task detail, header, Messages, Youth, access, or blocked-person surfaces.
+2. **P1 — header identity and controls collided.** The wordmark, subtitle, area selector, and profile control competed for horizontal space. The header is now a constrained single-row grid with the Micro wordmark, one area selector, and a conventional icon action.
+3. **P1 — selected task anatomy was replaced by a portrait crop.** Nearby cards now use the normal category icon, requester label, title, pay or civic status, metadata, and action hierarchy. No task-card portrait is rendered.
+4. **P1 — inconsistent component spacing and visual language.** The app content now uses an airy white and pale-blue base, crisp dark type, restrained borders/elevation, semantic teal/blue/purple accents, 48px minimum controls, and a consistent spacing/radius scale.
+5. **P1 — map identity was generic or unreadable.** Only map markers use profile photos, constrained to `48px` with a `52px` selected state, semantic mode cues, a visible selected state, and initials/icon fallback.
+6. **P2 — Activity summary icon inherited an oversized orbit rule.** Selector specificity now keeps the compact status icon inside its intended summary card.
+7. **P1 — Post preview labels could overlap listing titles.** Preview badges and pay are now in the card grid instead of being absolutely positioned over the title.
+8. **P2 — task category icons could lose centering.** Requester caption styling is now limited to the copy column, preserving the icon's centered grid layout.
+9. **P2 — local photo choice could imply upload.** Profile labels the marker photo as a browser-local preview and explicitly states that it is not uploaded, synced, or moderated.
 
-## Interaction coverage
+## Source and production checks
 
-- Nearby search, approximate-area selection, task type, time, distance, and youth filters update the list and map from one state.
-- The task sheet cycles through collapsed, half, and expanded states and exposes its state to assistive technology.
-- Paid tasks carry one identity through detail, commitment, Activity, PIN validation, simulated capture, completion checks, support-authority issue pauses, payout, rating, and completion. Completed tasks remain in history and cannot be accepted again.
-- Community Help commitments use a separate payment-free lifecycle, including guarded cancellation, no-show records, in-progress safety pauses, service hours, and separate volunteer/requester reviews with no payment or show-up fee.
-- A Community Help request can move to Seeking Sponsor and then Sponsored, with helper, fee, sponsor-total, and recipient-total lines.
-- Posting validates category, scope, exclusions, completion criteria, schedule, private address, pay, safety, and cancellation acknowledgment; the published fixture returns to Nearby and Activity.
-- All message rows open; sending, reporting, selecting a reason, blocking, support-pause receipts, and immutable local task records work. Participants cannot clear their own report, and review-only youth/guardian threads never fabricate pre-assignment messages.
-- Adult, youth, and guardian fixtures keep commitments, saves, report receipts, blocks, messages, and history isolated while sharing explicit guardian decisions and task-level moderation holds where safety state must cross roles.
-- Youth and guardian personas support request, approval, decline, blocked-task explanation, and acceptance gating. Seeded identity, age, terms, and guardian-link states are labeled as local fixtures.
-- Notifications derive from the active persona’s approval, match, lifecycle, and task-event state instead of asserting unseen activity.
+- Profile-photo scope inspection: only map pins and the Profile marker-photo chooser use `PersonAvatar`.
+- No CSS gradients remain in the app-owned stylesheet.
+- `npx tsc --noEmit --pretty false`: passed.
+- `npm run check:runtime`: passed; all 28 protected mobile runtime files remain unchanged.
+- `npm run build`: passed and produced the required client, worker, and hosting artifacts.
+- `npm run test:sites`: passed 4 of 4 checks.
+- `git diff --check`: passed.
+- Local preview health: `HTTP/1.1 200 OK` at `http://127.0.0.1:4174/`.
 
-## Accessibility and trust review
+## Visual and interaction verification
 
-- Route headings receive focus, consequential changes use restrained live regions, map and segmented controls expose selection, Post exposes progressbar semantics, and rating uses a radiogroup.
-- Focus rings use high-contrast teal, the hidden photo input exposes a visible focus-within treatment, interactive targets are at least 48px, and reduced motion is respected by both Motion and CSS transitions.
-- Exact addresses remain private before a protected match. Payment, identity, map, messaging, moderation, and notification states are explicitly labeled as test/local fixtures rather than live services.
+- Fresh in-app browser renders were inspected on August 6, 2026 in both calibrated device frames. The iPhone and Pixel 10 default Nearby views keep the header, search controls, map, marker portraits, selected task card, task sheet, and five-tab navigation within their intended bounds.
+- The current implementation was compared against the user-reported broken-state screenshot. The stacked full-width portraits, split wordmark, oversized task crop, and component collisions are no longer present. Profile photography appears only in the circular map markers; ordinary cards and controls retain icons or initials.
+- Selecting Devon's map marker updated the selected task to “Move two boxed lamps.” The Filters sheet opened with mode, category, time, distance, and youth controls, and the Paid task filter reported two matching tasks.
+- Task detail opened from Nearby with scope, exclusions, completion criteria, privacy boundary, trust treatment, pay breakdown, save/report actions, and the primary commitment action intact.
+- Activity rendered the empty-commitment action, sponsored-help state, and completed history. Messages rendered three local fixture threads. Profile rendered the normal initials card and a separate browser-local “Your map marker” photo setting. Post rendered step 1 of 4 with all three participation modes.
+- Fresh iPhone and Pixel checks plus the exercised primary screens produced no browser console warnings or errors.
+- The preview remains open at `http://127.0.0.1:4174/` for handoff.
 
-## Verification
-
-- `npm run build`: passed, including TypeScript and production packaging. The bundle-size advisory is non-blocking for this baseline prototype.
-- `npm run check:runtime`: passed; all 28 protected mobile runtime files are unchanged.
-- `npm run test:sites`: passed 4 of 4 tests.
-- Fresh in-app browser cycles on iPhone and Pixel: no current application warnings or errors; only Vite connection and React development informational logs.
-- Browser regressions passed for paid acceptance, paid completion and payout, both paid no-show roles, Community completion, Community cancellation/no-show, posting, reporting, notifications, youth approval, guardian lifecycle and report propagation, review-only messages, completed-task discovery removal, and persona state restoration.
+The older files under `qa/` describe the superseded parchment direction and remain historical evidence only; they are not presented as current visual targets.
 
 final result: passed
