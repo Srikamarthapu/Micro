@@ -1327,15 +1327,15 @@ function AuthWelcomeScreen() {
           <p>Post clearly scoped help, or lend a hand nearby.</p>
         </section>
         <p className="auth-trust-strip" aria-label="Micro participation principles">Clear scope<span aria-hidden="true">·</span>Fair pay<span aria-hidden="true">·</span>Community care</p>
+        <figure className="auth-hero-art">
+          <img src="/assets/micro/front-yard-leaves.webp" alt="A front yard with raked leaves, filled green-waste bags, and a rake resting by the gate" draggable={false} />
+        </figure>
         <div className="auth-welcome-actions">
           <button className="primary-button" onClick={() => flow.push(makeAccountTypeScreen())}>Create an account <ArrowRight size={19} /></button>
           <button className="secondary-button" onClick={() => flow.push(makeLoginScreen())}>I already have an account</button>
           {!auth.configured ? <button className="text-button auth-demo-link" onClick={auth.enterDemo}>Continue with the local demo</button> : null}
         </div>
-        <div className="auth-welcome-footnotes">
-          <p className="auth-legal-note">Approximate locations stay public; exact addresses remain protected until a confirmed match.</p>
-          {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
-        </div>
+        <p className="auth-legal-note">Exact addresses stay private until a confirmed match.</p>
       </main>
     </MobileScroll>
   );
@@ -1452,7 +1452,7 @@ function LoginScreen() {
     <MobileScroll className="auth-experience auth-scroll">
       <main className="auth-route-page">
         <AuthFormHeading eyebrow="Welcome back" title="Sign in to Micro." copy="Your account and nonprofit permissions stay protected with Supabase. Task and message content is still local preview data." />
-        {!auth.configured ? <AuthConnectionNote /> : null}
+        {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
         <form className="auth-form" onSubmit={submit} noValidate>
           <AuthInputField id="login-email" label="Email" icon={EnvelopeSimple} type="email" value={email} onChange={setEmail} autoComplete="email" placeholder="you@example.org" errorId={error ? "login-error" : undefined} invalid={Boolean(error) && !emailValid} />
           <AuthInputField id="login-password" label="Password" icon={LockKey} type="password" value={password} onChange={setPassword} autoComplete="current-password" placeholder="Your password" errorId={error ? "login-error" : undefined} invalid={Boolean(error) && !password} />
@@ -1544,7 +1544,7 @@ function SignUpScreen({ accountType }: { accountType: AccountType }) {
           title={accountType === "nonprofit" ? "Introduce your nonprofit." : "A few details, then you're in."}
           copy={accountType === "nonprofit" ? "This creates a pending organization profile. Sponsorship stays locked until verification." : "Micro uses your approximate area for discovery and keeps exact addresses protected."}
         />
-        {!auth.configured ? <AuthConnectionNote /> : null}
+        {!auth.configured ? <AuthConnectionNote /> : <AuthLiveBoundary />}
         <form className="auth-form" onSubmit={submit} noValidate>
           {accountType === "nonprofit" ? <AuthInputField id="signup-organization" label="Organization name" icon={Buildings} value={organizationName} onChange={setOrganizationName} autoComplete="organization" placeholder="Neighborhood Food Network" errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && organizationName.trim().length < 2} /> : null}
           <AuthInputField id="signup-name" label={accountType === "nonprofit" ? "Representative name" : "Full name"} icon={UserCircle} value={fullName} onChange={setFullName} autoComplete="name" placeholder="Your name" errorId={error ? "signup-error" : undefined} invalid={Boolean(error) && fullName.trim().length < 2} />
