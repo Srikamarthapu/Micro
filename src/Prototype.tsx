@@ -1903,10 +1903,11 @@ function BottomNav() {
   const { activeTab, setActiveTab } = useMicro();
   const keyboard = useKeyboard();
   const reduceMotion = useReducedMotion();
+  // Activity lives inside Profile now, so it keeps Profile lit while it is open
+  // instead of owning a rail slot of its own.
   const items: Array<{ id: TabId; label: string; icon: Icon }> = [
     { id: "nearby", label: "Nearby", icon: MapPin },
     { id: "post", label: "Post", icon: Plus },
-    { id: "activity", label: "Activity", icon: Bell },
     { id: "messages", label: "Messages", icon: ChatCircle },
     { id: "profile", label: "Profile", icon: UserCircle },
   ];
@@ -1915,7 +1916,7 @@ function BottomNav() {
     <nav className="bottom-nav" aria-label="Primary">
       <div className="bottom-nav-rail">
         {items.map(({ id, label, icon: NavIcon }) => {
-          const isActive = activeTab === id;
+          const isActive = activeTab === id || (id === "profile" && activeTab === "activity");
           return (
             <button
               key={id}
@@ -1953,10 +1954,25 @@ function BottomNav() {
   );
 }
 
+/**
+ * Jobs worth pinging a profile about: sponsored work, which is already funded
+ * and pays the helper, plus youth-eligible tasks while Youth Mode is active.
+ * Deliberately independent of the Nearby filters, so clearing or narrowing a
+ * filter never silences the bell.
+ */
+function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId) {
+  const area = areaById(areaId);
+  return pool.filter((task) =>
+    task.ownerPersona !== persona &&
+    (areaId === "all" || task.areaId === areaId) &&
+    distanceMiles(area.center, task.coords) <= 3 &&
+    (task.mode === "sponsored" || (persona === "youth" && Boolean(task.youthEligible))));
+}
+
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -1969,7 +1985,9 @@ function NearbyScreen() {
   const [locationOpen, setLocationOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [mode, setMode] = useState<TaskMode | "all">("all");
-  const [category, setCategory] = useState("all");
+  // An empty selection means every category, so the filter reads as "any"
+  // until someone picks the specific kinds of work they want.
+  const [categories, setCategories] = useState<string[]>([]);
   const [when, setWhen] = useState<"any" | "today" | "weekend">("any");
   const [radius, setRadius] = useState<1 | 3>(3);
   const [youthOnly, setYouthOnly] = useState(false);
@@ -1977,17 +1995,22 @@ function NearbyScreen() {
   const dragStartY = useRef<number | null>(null);
   const sheetDragHandled = useRef(false);
   const youthParticipationReady = persona !== "youth" || (youthAge >= 15 && guardianLinked && accessTermsAccepted);
-  const allTasks = [
+  const taskPool = [
     ...remoteTasks,
     ...ownedTasks,
     ...(sponsorFunded ? [sponsoredFixtureTask] : []),
     ...tasks,
-  ].filter((task) => !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
+  ];
+  // A job you have taken on stays here rather than vanishing into Activity, so
+  // the commitment is the first thing you see and it is obvious why nothing
+  // else can be accepted yet.
+  const activeCommitment = taskPool.find((task) => acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id));
+  const allTasks = taskPool.filter((task) => !task.listingPaused && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester) && (persona !== "youth" || task.ownerPersona === persona || (youthParticipationReady && task.youthEligible)));
   const selected = allTasks.find((task) => task.id === selectedTaskId) ?? allTasks[0];
   const visibleTasks = allTasks.filter(
     (task) =>
       (mode === "all" || task.mode === mode) &&
-      (category === "all" || task.category === category) &&
+      (!categories.length || (task.category ? categories.includes(task.category) : false)) &&
       (areaId === "all" || task.areaId === areaId) &&
       distanceMiles(activeArea.center, task.coords) <= radius &&
       (when === "any" || (when === "today" ? task.time.startsWith("Today") : /Saturday|Sunday/.test(task.time))) &&
@@ -1995,8 +2018,9 @@ function NearbyScreen() {
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
   const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0];
+  const specialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId) : [];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
-  const activeFilterCount = Number(mode !== "all") + Number(category !== "all") + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
+  const activeFilterCount = Number(mode !== "all") + categories.length + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
   const mapTasks = primaryVisibleTask
     ? [primaryVisibleTask, ...allTasks.filter((task) => visibleIds.has(task.id) && task.id !== primaryVisibleTask.id)]
     : allTasks.filter((task) => visibleIds.has(task.id));
@@ -2031,6 +2055,10 @@ function NearbyScreen() {
               <MapPin size={18} weight="fill" aria-hidden="true" />
               <span>{activeArea.label}</span>
               <CaretDown size={16} weight="bold" aria-hidden="true" />
+            </button>
+            <button className="notify-quick-button" data-ping={specialJobs.length ? "true" : "false"} aria-label={specialJobs.length ? `Notifications · ${specialJobs.length} special ${specialJobs.length === 1 ? "job" : "jobs"} for you` : "Notifications"} onClick={() => { keyboard.hide(); flow.push(makeNotificationsScreen()); }}>
+              <Bell size={24} weight={specialJobs.length ? "fill" : "regular"} aria-hidden="true" />
+              {specialJobs.length ? <span className="notify-ping" data-testid="special-job-ping" aria-hidden="true">{specialJobs.length}</span> : null}
             </button>
             <button className="profile-quick-button" aria-label="Open profile" onClick={() => setActiveTab("profile")}><UserCircle size={28} weight="regular" aria-hidden="true" /></button>
           </header>
@@ -2076,27 +2104,38 @@ function NearbyScreen() {
               }}
               onPointerCancel={() => { dragStartY.current = null; sheetDragHandled.current = false; }}
             ><span className="sheet-grabber" aria-hidden="true" /></button>
-            <div className="tasks-heading-row"><h1 id="nearby-heading">Nearby tasks</h1><span>{visibleTasks.length} nearby</span></div>
+            {activeCommitment ? (
+              <article className="active-commitment">
+                <p className="active-commitment-label"><span className="live-dot" aria-hidden="true" /> Your active job</p>
+                <h2>{activeCommitment.title}</h2>
+                <p className="active-commitment-meta">{activeCommitment.time} · {activeCommitment.earning ? `$${activeCommitment.earning}` : "Volunteer"}</p>
+                <button className="primary-button" onClick={() => setActiveTab("activity")}>Open job <ArrowRight size={18} /></button>
+              </article>
+            ) : null}
+            <div className="tasks-heading-row"><h1 id="nearby-heading">{activeCommitment ? "Other tasks nearby" : "Nearby tasks"}</h1><span>{visibleTasks.length} nearby</span></div>
             {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
             {visibleTasks.length && primaryVisibleTask ? (
               <div className="task-list">
-                <TaskCard task={primaryVisibleTask} selected onOpen={openTask} />
-                {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} onOpen={openTask} />)}
+                <TaskCard task={primaryVisibleTask} selected blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} />
+                {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} />)}
               </div>
             ) : (
-              <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategory("all"); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
+              <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
             )}
           </section>
         </div>
       </MobileScroll>
 
-      <BottomSheet open={filtersOpen} onOpenChange={setFiltersOpen} title="Filter nearby help" description="Refine the list by mode, time, distance, or youth eligibility." snap={0.78}>
+      <BottomSheet open={filtersOpen} onOpenChange={setFiltersOpen} title="Filter nearby help" description="Refine the list by mode, one or more categories, time, distance, or youth eligibility." snap={0.78}>
         <div className="sheet-form">
           <fieldset className="choice-fieldset">
             <legend>Task type</legend>
             {(["all", "paid", "community", "sponsored"] as const).map((value) => <button key={value} className="choice-row" aria-pressed={mode === value} data-selected={mode === value ? "true" : "false"} onClick={() => setMode(value)}><span>{value === "all" ? "All nearby help" : modeMeta[value].label}</span><span className="radio-mark">{mode === value ? <Check size={15} weight="bold" /> : null}</span></button>)}
           </fieldset>
-          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Category</legend><div className="filter-chip-grid">{["all", ...catalogCategories.map((entry) => entry.label)].map((value) => <button key={value} aria-pressed={category === value} data-active={category === value ? "true" : "false"} onClick={() => setCategory(value)}>{value === "all" ? "Any category" : value}</button>)}</div></fieldset>
+          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Category{categories.length ? <span className="legend-count">{categories.length} selected</span> : null}</legend><div className="filter-chip-grid">
+            <button aria-pressed={!categories.length} data-active={!categories.length ? "true" : "false"} onClick={() => setCategories([])}>Any category</button>
+            {catalogCategories.map((entry) => { const picked = categories.includes(entry.label); return <button key={entry.label} aria-pressed={picked} data-active={picked ? "true" : "false"} onClick={() => setCategories((current) => picked ? current.filter((item) => item !== entry.label) : [...current, entry.label])}>{picked ? <Check size={13} weight="bold" aria-hidden="true" /> : null}{entry.label}</button>; })}
+          </div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>When</legend><div className="segmented-row">{(["any", "today", "weekend"] as const).map((value) => <button key={value} aria-pressed={when === value} data-active={when === value ? "true" : "false"} onClick={() => setWhen(value)}>{value === "any" ? "Any time" : value === "today" ? "Today" : "Weekend"}</button>)}</div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Distance</legend><div className="segmented-row two-segments">{([1, 3] as const).map((value) => <button key={value} aria-pressed={radius === value} data-active={radius === value ? "true" : "false"} onClick={() => setRadius(value)}>Within {value} mi</button>)}</div></fieldset>
           <button className="choice-row" aria-pressed={youthOnly} data-selected={youthOnly ? "true" : "false"} onClick={() => setYouthOnly((current) => !current)}><span><strong>Youth-eligible only</strong><small>Guardian approval is still task-specific</small></span><span className="checkbox">{youthOnly ? <Check size={14} weight="bold" /> : null}</span></button>
@@ -2358,7 +2397,7 @@ function taskFromRow(row: Record<string, unknown>): Task {
   };
 }
 
-function TaskCard({ task, selected = false, unavailable = false, onOpen }: { task: Task; selected?: boolean; unavailable?: boolean; onOpen: (task: Task) => void }) {
+function TaskCard({ task, selected = false, unavailable = false, blockedReason, onOpen }: { task: Task; selected?: boolean; unavailable?: boolean; blockedReason?: string; onOpen: (task: Task) => void }) {
   const ModeIcon = modeMeta[task.mode].icon;
   const TaskIcon = task.icon;
   const { persona } = useMicro();
@@ -2385,6 +2424,7 @@ function TaskCard({ task, selected = false, unavailable = false, onOpen }: { tas
         <span aria-hidden="true">·</span>
         <strong>{task.mode === "community" ? "Volunteer" : "Fair pay"}</strong>
       </div>
+      {blockedReason && !unavailable && !isOwnedListing ? <p className="review-flag blocked-flag"><Warning size={14} weight="fill" /> {blockedReason}</p> : null}
       {selected ? <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button> : (
         <button className="card-link" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View details"} {!unavailable ? <ArrowRight size={17} /> : null}</button>
       )}
@@ -2479,7 +2519,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
               <span className="success-seal"><CheckCircle size={46} weight="fill" /></span>
               <p className="eyebrow">Protected match made</p>
               <h1>You’re helping with<br />{task.title.toLowerCase()}.</h1>
-              <p>The task is now in Activity, and a private task thread is ready.</p>
+              <p>It is pinned at the top of Nearby as your active job, the steps are in Activity, and a private task thread is ready.</p>
               <div className="truth-card">
                 <ShieldCheck size={22} weight="fill" />
                 <div><strong>{task.mode === "community" ? "Volunteer commitment recorded" : "Payment secured — test mode"}</strong><span>{task.mode === "community" ? "No payment is offered for this task." : "No real money moves in this prototype."}</span></div>
@@ -3118,6 +3158,7 @@ function ActivityScreen() {
   return (
     <MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded">
+        <button className="tab-back-link" onClick={() => setActiveTab("profile")}><CaretLeft size={15} weight="bold" /> Profile</button>
         <PageTitle eyebrow={isLiveNonprofit ? "Personal + organization activity" : "Your commitments"} title="Activity" subtitle={isLiveNonprofit ? "Your tasks and organization sponsorships, kept in one place." : "Every task keeps one plain-language status from match through completion."} />
         <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section>
         {isLiveNonprofit ? <button className="organization-entry" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}>
@@ -3171,7 +3212,7 @@ function makeNotificationsScreen(): FlowScreen {
 function NotificationsScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded } = useMicro();
+  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, profileAreaId } = useMicro();
   const openTab = (tab: TabId) => { setActiveTab(tab); flow.pop(); };
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
   const actorTasks = [activeTask, communityTask].filter((task): task is Task => Boolean(task && actor && acceptedTaskActors[task.id] === actor && (acceptedTaskIds.includes(task.id) || taskEvents[task.id]?.length)));
@@ -3190,6 +3231,18 @@ function NotificationsScreen() {
       copy: sponsorFunded ? "The local preview records a funded helper task with a $0 recipient total." : auth.capabilities.can_receive_sponsorship_requests ? "Open Activity to review the local request fixture and your organization’s funding access." : organizationAccess.copy,
       time: "Now",
       tab: "activity",
+    });
+  }
+  // The Nearby bell counts these, so the list has to name the same jobs.
+  const specialJobs = specialJobsFor([...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId)
+    .filter((task) => !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused);
+  for (const task of [...specialJobs].reverse()) {
+    notices.unshift({
+      icon: task.mode === "sponsored" ? Sparkle : ShieldCheck,
+      title: task.mode === "sponsored" ? "Sponsored job for you" : "Youth-eligible job for you",
+      copy: `${task.title} · ${task.area} · ${task.time}${task.earning ? ` · $${task.earning}` : ""}`,
+      time: "Now",
+      tab: "nearby",
     });
   }
   if (youthApprovalTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: persona === "guardian" ? "Youth task needs your review" : "Guardian review requested", copy: "The exact pantry-task scope and time are ready for a task-specific decision.", time: "Now", tab: "profile" });
@@ -3751,8 +3804,10 @@ const profileInfoTitles: Record<ProfileInfoKind, string> = {
 function ProfileScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, acceptedTaskIds, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileAreaId, setProfileAreaId, profilePhotos, setProfilePhotos } = useMicro();
+  const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, acceptedTaskIds, closedTaskIds, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileAreaId, setProfileAreaId, profilePhotos, setProfilePhotos, setActiveTab } = useMicro();
   const profileArea = areaById(profileAreaId).label;
+  const activeCommitments = acceptedTaskIds.filter((id) => !closedTaskIds.includes(id)).length;
+  const ownedByYou = ownedTasks.filter((task) => task.ownerPersona === persona);
   const [areaOpen, setAreaOpen] = useState(false);
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoError, setPhotoError] = useState("");
@@ -3816,6 +3871,11 @@ function ProfileScreen() {
         <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
+        <section className="settings-group">
+          <h2>Your commitments</h2>
+          <button className="settings-row" onClick={() => setActiveTab("activity")}><span className="settings-icon blue"><ListChecks size={21} weight="bold" /></span><span><strong>Activity</strong><small>{ownedByYou.length ? `${activeCommitments ? `${activeCommitments} active · ` : ""}${ownedByYou.length} posted by you` : activeCommitments ? `${activeCommitments} active ${activeCommitments === 1 ? "commitment" : "commitments"}` : "Commitments, posted tasks, and history"}</small></span>{activeCommitments ? <span className="settings-status">{activeCommitments}</span> : null}<ArrowRight size={18} /></button>
+          <button className="settings-row" onClick={() => flow.push(makeNotificationsScreen())}><span className="settings-icon orange"><Bell size={21} weight="fill" /></span><span><strong>Notifications</strong><small>{notificationsEnabled ? "Role-aware task updates" : "Paused for this preview"}</small></span><ArrowRight size={18} /></button>
+        </section>
         <section className="settings-group">
           <h2>Account</h2>
           {isLiveAccount ? <>

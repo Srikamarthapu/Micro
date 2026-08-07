@@ -499,6 +499,15 @@
 .boundary-note.custom-warning svg { color: var(--micro-orange); }
 .truth-card.custom-truth { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
 .truth-card.custom-truth svg { color: var(--micro-orange); }
+/* The job you have taken on, pinned above everything else in Nearby. */
+.active-commitment { display: grid; gap: 6px; margin: 0 0 18px; padding: 15px 16px 16px; border: 1px solid #bfe0d8; border-radius: 18px; background: var(--micro-green-soft); }
+.active-commitment-label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--micro-teal-dark); font-size: 11px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+.live-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--micro-teal); box-shadow: 0 0 0 3px rgba(10, 136, 124, 0.18); }
+.active-commitment h2 { margin: 2px 0 0; font-size: 19px; line-height: 1.18; }
+.active-commitment-meta { margin: 0; color: var(--micro-ink-soft); font-size: 13px; }
+.active-commitment .primary-button { margin-top: 8px; }
+.blocked-flag { color: var(--micro-ink-soft); }
+.blocked-flag svg { color: var(--micro-orange); }
 .review-flag { display: flex; align-items: center; gap: 5px; margin: 8px 0 0; color: var(--micro-orange); font-size: 11px; font-weight: 800; }
 .review-flag svg { flex: 0 0 auto; }
 .category-tile[data-active="true"] { border-color: var(--micro-teal); background: var(--micro-green-soft); }
@@ -981,7 +990,9 @@
 .info-strip { display: flex; align-items: center; gap: 8px; padding: 11px; border-radius: 13px; background: #eee9e1; color: #5d6877; font-size: 12px; }
 .inline-filter-fieldset { margin-top: 4px; }
 .filter-chip-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.filter-chip-grid button { min-height: 48px; padding: 6px 8px; border: 1px solid var(--micro-line); border-radius: 13px; background: #fffdfa; color: var(--micro-ink-soft); font-size: 11px; font-weight: 800; }
+.filter-chip-grid button { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--micro-line); border-radius: 13px; background: #fffdfa; color: var(--micro-ink-soft); font-size: 11px; font-weight: 800; }
+/* Categories are multi-select, so the legend says how many are picked. */
+.legend-count { margin-left: 7px; color: var(--micro-teal-dark); font-size: 11px; font-weight: 800; }
 .filter-chip-grid button[data-active="true"] { border-color: var(--micro-teal); background: #e5f4f0; color: var(--micro-teal-dark); }
 .two-segments { grid-template-columns: repeat(2, 1fr); }
 .sheet-form > .primary-button,
@@ -1139,7 +1150,8 @@
   white-space: normal;
 }
 
-.profile-quick-button {
+.profile-quick-button,
+.notify-quick-button {
   display: grid;
   width: 48px;
   height: 48px;
@@ -1150,6 +1162,49 @@
   border-radius: 50%;
   background: transparent;
   color: var(--micro-ink);
+}
+
+/* The bell only earns attention when a special job actually applies. */
+.notify-quick-button {
+  position: relative;
+  width: 44px;
+  margin-right: -4px;
+}
+
+.notify-quick-button[data-ping="true"] {
+  color: var(--micro-teal-dark);
+}
+
+.notify-ping {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  place-items: center;
+  border: 2px solid #f4f9fd;
+  border-radius: 999px;
+  background: #b3341f;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.tab-back-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: -6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--micro-teal-dark);
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .profile-quick-button .person-avatar {
@@ -1593,7 +1648,8 @@
   position: relative;
   display: grid;
   min-height: var(--micro-nav-track-height);
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   padding: 6px;
   border: 1px solid #d8e4ed;
   border-radius: 999px;
