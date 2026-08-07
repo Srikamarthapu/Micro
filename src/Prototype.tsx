@@ -619,9 +619,9 @@ function MicroShell() {
         <motion.section
           key={activeTab}
           className="tab-scene"
-          initial={{ opacity: 0, y: reduceMotion ? 0 : 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: reduceMotion ? 0 : -5 }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
           transition={{ duration: reduceMotion ? 0.01 : 0.18, ease: [0.2, 0.8, 0.2, 1] }}
         >
           {activeTab === "nearby" ? <NearbyScreen /> : null}
@@ -639,6 +639,7 @@ function MicroShell() {
 function BottomNav() {
   const { activeTab, setActiveTab } = useMicro();
   const keyboard = useKeyboard();
+  const reduceMotion = useReducedMotion();
   const items: Array<{ id: TabId; label: string; icon: Icon }> = [
     { id: "nearby", label: "Nearby", icon: MapPin },
     { id: "post", label: "Post", icon: Plus },
@@ -649,24 +650,42 @@ function BottomNav() {
 
   return (
     <nav className="bottom-nav" aria-label="Primary">
-      {items.map(({ id, label, icon: NavIcon }) => (
-        <button
-          key={id}
-          className="nav-item"
-          data-active={activeTab === id ? "true" : "false"}
-          aria-current={activeTab === id ? "page" : undefined}
-          onClick={() => {
-            keyboard.hide();
-            setActiveTab(id);
-          }}
-          data-testid={`nav-${id}`}
-        >
-          <span className="nav-icon-wrap">
-            <NavIcon size={27} weight={activeTab === id ? "fill" : "regular"} aria-hidden="true" />
-          </span>
-          <span>{label}</span>
-        </button>
-      ))}
+      <div className="bottom-nav-rail">
+        {items.map(({ id, label, icon: NavIcon }) => {
+          const isActive = activeTab === id;
+          return (
+            <button
+              key={id}
+              className="nav-item"
+              data-active={isActive ? "true" : "false"}
+              aria-current={isActive ? "page" : undefined}
+              aria-label={label}
+              onClick={() => {
+                keyboard.hide();
+                setActiveTab(id);
+              }}
+              data-testid={`nav-${id}`}
+            >
+              {isActive ? (
+                <motion.span
+                  className="nav-active-cushion"
+                  layoutId="micro-nav-active-cushion"
+                  transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 430, damping: 36, mass: 0.65 }}
+                  aria-hidden="true"
+                />
+              ) : null}
+              <motion.span
+                className="nav-icon-wrap"
+                animate={{ scale: isActive && !reduceMotion ? 1.06 : 1 }}
+                transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 500, damping: 34 }}
+              >
+                <NavIcon size={22} weight={isActive ? "fill" : "regular"} aria-hidden="true" />
+              </motion.span>
+              <span className="nav-label">{label}</span>
+            </button>
+          );
+        })}
+      </div>
     </nav>
   );
 }
@@ -708,6 +727,10 @@ function NearbyScreen() {
   const activeFilterCount = Number(mode !== "all") + Number(category !== "all") + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
   const ownerPinClasses = Object.fromEntries(ownedTasks.map((task, index) => [task.id, index % 2 ? "pin-posted-alt" : "pin-posted"]));
   const pinClasses: Record<string, string> = { boxes: "pin-home", tablet: "pin-community", leaves: "pin-sponsored", hedge: "pin-hedge", pantry: "pin-pantry", table: "pin-table", "grocery-sponsored": "pin-grocery", ...ownerPinClasses };
+  const mappableTasks = allTasks.filter((task) => pinClasses[task.id] && visibleIds.has(task.id));
+  const mapTasks = primaryVisibleTask
+    ? [primaryVisibleTask, ...mappableTasks.filter((task) => task.id !== primaryVisibleTask.id)].filter((task) => pinClasses[task.id]).slice(0, 4)
+    : mappableTasks.slice(0, 4);
 
   useEffect(() => {
     if (primaryVisibleTask && selectedTaskId !== primaryVisibleTask.id) setSelectedTaskId(primaryVisibleTask.id);
@@ -737,7 +760,7 @@ function NearbyScreen() {
             <label className="search-field">
               <MagnifyingGlass size={21} aria-hidden="true" />
               <span className="sr-only">Search tasks or neighborhoods</span>
-              <KeyboardInput value={search} onChange={(event) => setSearch(event.target.value)} onBlur={() => keyboard.hide()} placeholder="Search tasks or neighborhoods" data-testid="nearby-search" />
+              <KeyboardInput value={search} onChange={(event) => setSearch(event.target.value)} onBlur={() => keyboard.hide()} placeholder="Search nearby tasks" data-testid="nearby-search" />
             </label>
             <button className="filter-button" onClick={() => setFiltersOpen(true)}>
               <SlidersHorizontal size={22} aria-hidden="true" />
@@ -748,7 +771,7 @@ function NearbyScreen() {
 
           <section className="map-stage" aria-label="Approximate task map">
             <img className="map-image" src="/assets/micro/neighborhood-map.png" alt="Generalized street map of East San José" />
-            {allTasks.filter((task) => pinClasses[task.id] && visibleIds.has(task.id)).map((task) => (
+            {mapTasks.map((task) => (
               <MapTaskPin key={task.id} className={pinClasses[task.id]} task={task} active={primaryVisibleTask?.id === task.id} onSelect={setSelectedTaskId} />
             ))}
             <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />Approximate locations</div>
@@ -856,13 +879,13 @@ function TaskCard({ task, selected = false, unavailable = false, onOpen }: { tas
         <h2>{task.title}</h2>
         {task.earning ? <div className="earning"><strong>${task.earning}</strong><span>You earn</span></div> : <span className="volunteer-label">No payment</span>}
       </div>
-      <p className="task-description">{task.description}</p>
-      <div className="task-facts">
-        <span><CalendarBlank size={17} /> {task.time}</span>
-        <span><Clock size={17} /> {task.duration}</span>
-        <span><ShieldCheck size={17} /> {task.mode === "community" ? "Volunteer · no payment" : "Fair pay · clear scope"}</span>
+      <div className="task-meta-line" aria-label={`${task.time}, ${task.duration}, ${task.mode === "community" ? "volunteer with no payment" : "fair pay"}`}>
+        <span>{task.time}</span>
+        <span aria-hidden="true">·</span>
+        <span>{task.duration}</span>
+        <span aria-hidden="true">·</span>
+        <strong>{task.mode === "community" ? "Volunteer" : "Fair pay"}</strong>
       </div>
-      {task.youthEligible ? <div className="youth-label"><SealCheck size={15} /> Youth eligible with guardian approval</div> : null}
       {selected ? <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button> : (
         <button className="card-link" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View details"} {!unavailable ? <ArrowRight size={17} /> : null}</button>
       )}
@@ -1240,6 +1263,7 @@ function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 1
 function ActivityScreen() {
   const flow = useFlow();
   const { paidStage, sponsorFunded, sponsorSeeking, setSponsorSeeking, activeTask, communityTask, communityStage, ownedTasks, setOwnedTasks, setActiveTab, setSelectedTaskId, persona, reportedTaskIds, moderationHolds, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, setActivityPerspective, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus } = useMicro();
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const paidReported = reportedTaskIds.includes(activeTask.id) || Boolean(moderationHolds[activeTask.id]);
   const communityReported = Boolean(communityTask && (reportedTaskIds.includes(communityTask.id) || moderationHolds[communityTask.id]));
   const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
@@ -1258,6 +1282,19 @@ function ActivityScreen() {
   const completedCatalog = Array.from(new Map([...tasks, sponsoredFixtureTask, ...ownedTasks, ...pastThreadTasks, activeTask, ...(communityTask ? [communityTask] : [])].map((task) => [task.id.replace(/-history$/, ""), task])).values());
   const completedSessionTasks = completedCatalog.filter((task) => closedTaskIds.includes(task.id) && acceptedTaskActors[task.id] === actor);
   const ownedByPersona = ownedTasks.filter((task) => task.ownerPersona === persona);
+  const completedItems: Array<{ id: string; icon: Icon; title: string; copy: string }> = [
+    ...completedSessionTasks.map((task) => ({ id: task.id, icon: task.mode === "community" ? HandHeart : CheckCircle, title: task.title, copy: task.mode === "community" ? "Volunteer task · completed in this session" : `Completed in this session · $${task.earning ?? 0} test payout` })),
+    ...(persona === "adult"
+      ? [
+        { id: "porch-light", icon: CheckCircle, title: "Set up porch light timer", copy: "Completed July 30 · $20 released" },
+        { id: "garden-beds", icon: HandHeart, title: "Water community garden beds", copy: "Volunteer task · completed July 26" },
+      ]
+      : [
+        { id: "library-kits", icon: ShieldCheck, title: "Pack library welcome kits", copy: "Guardian-approved · completed July 28 · $18 test payout" },
+        { id: "community-supplies", icon: HandHeart, title: "Sort community-center supplies", copy: "Volunteer task · 1 hour added July 22" },
+      ]),
+  ];
+  const visibleCompletedItems = showAllHistory ? completedItems : completedItems.slice(0, 1);
 
   return (
     <MobileScroll className="app-screen tab-scroll">
@@ -1281,7 +1318,7 @@ function ActivityScreen() {
         </section> : null}
         {showCommunity && communityTask ? <section className="activity-group"><div className="section-heading"><h2>{activityPerspective === "helper" ? "Community commitment" : "Community request"}</h2><span>1</span></div><button className="activity-card community-activity-card" onClick={() => flow.push(makeCommunityJourneyScreen(communityTask))}><div className="activity-top"><span className="status-badge community-status"><HandHeart size={14} weight="fill" /> {communityReported ? "Support review" : communityStage}</span><ArrowRight size={19} /></div><h3>{communityTask.title}</h3><p>{communityTask.time} · {communityTask.area}</p><div className="activity-bottom"><span>{communityReported ? "Participant actions paused" : "Volunteer · no payment"}</span><strong>{activityPerspective === "helper" ? "Open commitment" : "Review request"}</strong></div></button></section> : null}
         {ownedByPersona.length ? <section className="activity-group"><div className="section-heading"><h2>Posted by you</h2><span>{ownedByPersona.length}</span></div>{ownedByPersona.map((task) => { const paused = Boolean(task.listingPaused); return <article key={task.id} className="posted-card"><div className="mode-badge">{paused ? <Warning size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />} {paused ? "Paused" : "Published"}</div><h3>{task.title}</h3><p>{task.time} · {paused ? "Hidden from Nearby" : `${task.area} shown approximately`}</p><div className="success-actions">{!paused ? <button className="secondary-button" onClick={() => { setSelectedTaskId(task.id); setActiveTab("nearby"); }}>Preview listing</button> : null}<button className="text-button" onClick={() => setOwnedTasks((current) => current.map((listing) => listing.id === task.id ? { ...listing, listingPaused: !paused } : listing))}>{paused ? "Resume listing" : "Pause listing"}</button></div></article>; })}</section> : null}
-        {persona === "adult" ? <section className="activity-group">
+        {persona === "adult" && (sponsorSeeking || sponsorFunded) ? <section className="activity-group">
           <div className="section-heading"><h2>Sponsored help</h2><span>1</span></div>
           <article className="sponsor-card">
             <div className="mode-badge"><Sparkle size={14} weight="fill" /> {sponsorFunded ? "Sponsored" : sponsorSeeking ? "Seeking Sponsor" : "Community Help"}</div>
@@ -1291,9 +1328,9 @@ function ActivityScreen() {
           </article>
         </section> : null}
         {persona !== "guardian" ? <section className="activity-group completed-group">
-          <div className="section-heading"><h2>Recently completed</h2><span>{completedSessionTasks.length + 2}</span></div>
-          {completedSessionTasks.map((task) => <div key={task.id} className="compact-history">{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : <CheckCircle size={20} weight="fill" />}<div><strong>{task.title}</strong><span>{task.mode === "community" ? "Volunteer task · completed in this session" : `Completed in this session · $${task.earning ?? 0} test payout`}</span></div></div>)}
-          {persona === "adult" ? <><div className="compact-history"><CheckCircle size={20} weight="fill" /><div><strong>Set up porch light timer</strong><span>Completed July 30 · $20 released</span></div></div><div className="compact-history"><HandHeart size={20} weight="fill" /><div><strong>Water community garden beds</strong><span>Volunteer task · completed July 26</span></div></div></> : <><div className="compact-history"><ShieldCheck size={20} weight="fill" /><div><strong>Pack library welcome kits</strong><span>Guardian-approved · completed July 28 · $18 test payout</span></div></div><div className="compact-history"><HandHeart size={20} weight="fill" /><div><strong>Sort community-center supplies</strong><span>Volunteer task · 1 hour added July 22</span></div></div></>}
+          <div className="section-heading"><h2>Recently completed</h2><span>{completedItems.length}</span></div>
+          {visibleCompletedItems.map(({ id, icon: HistoryIcon, title, copy }) => <div key={id} className="compact-history"><HistoryIcon size={20} weight="fill" /><div><strong>{title}</strong><span>{copy}</span></div></div>)}
+          {completedItems.length > 1 ? <button className="history-toggle" aria-expanded={showAllHistory} onClick={() => setShowAllHistory((current) => !current)}>{showAllHistory ? "Show less" : `View all ${completedItems.length}`}<CaretDown size={16} weight="bold" aria-hidden="true" /></button> : null}
         </section> : null}
       </div>
     </MobileScroll>
@@ -1788,6 +1825,7 @@ function ProfileScreen() {
   const flow = useFlow();
   const { youthApprovedTaskId, youthApprovalTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, persona, guardianLinked, blockedRequesterNames, reportedTaskIds, savedTaskIds, ownedTasks, activeTask, communityTask, sponsorFunded, notificationsEnabled, setNotificationsEnabled, profileArea, setProfileArea, profilePhotos, setProfilePhotos } = useMicro();
   const [areaOpen, setAreaOpen] = useState(false);
+  const [photoOpen, setPhotoOpen] = useState(false);
   const [photoError, setPhotoError] = useState("");
   const youthApproved = youthApprovedTaskId === "pantry";
   const youthPending = youthApprovalTaskId === "pantry";
@@ -1828,16 +1866,9 @@ function ProfileScreen() {
         <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section>
         <section className="settings-group"><h2>Participation</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section>
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
-        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this demo profile"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles</small></span><ArrowRight size={18} /></button></section>
-        <section className="settings-group profile-photo-setting" aria-labelledby="marker-photo-heading">
-          <h2 id="marker-photo-heading">Your map marker</h2>
-          <div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div>
-          <div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>Optional. This photo appears only on your own future map markers in this browser session. It is not uploaded, synced, stored, or moderated.</p></div>
-          <div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>
-          {photoError ? <p className="form-error" role="alert">{photoError}</p> : null}
-        </section>
+        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this demo profile"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
         <div className="demo-card"><Info size={20} /><div><strong>UI prototype</strong><span>Payments, identity, maps, messages, and task data are realistic local fixtures—not live services.</span></div></div>
-      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{["East San José", "Alum Rock", "Little Portugal"].map((value) => <button key={value} className="choice-row" aria-pressed={profileArea === value} data-selected={profileArea === value ? "true" : "false"} onClick={() => { setProfileArea(value); setAreaOpen(false); }}><span>{value}</span>{profileArea === value ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet></>
+      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{["East San José", "Alum Rock", "Little Portugal"].map((value) => <button key={value} className="choice-row" aria-pressed={profileArea === value} data-selected={profileArea === value ? "true" : "false"} onClick={() => { setProfileArea(value); setAreaOpen(false); }}><span>{value}</span>{profileArea === value ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
 }
 
