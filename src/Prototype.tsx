@@ -77,507 +77,12 @@ import {
   type TaskTemplate,
 } from "./taskCatalog";
 import { supabase, supabaseConfig } from "./supabase";
+import { areaById, areaIdFromServiceArea, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
+import { dateChoicesFor, slotsRemainingToday, startTimeSlots } from "./micro/schedule";
+import { appendTaskEvent, emptyCapabilities, emptyTaskReview, type AccountType, type AuthActionResult, type AuthCapabilities, type AuthOrganization, type AuthProfile, type CommunityStage, type CompletionSubmission, type MessageItem, type OrganizationVerificationStatus, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type SignUpInput, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./micro/types";
+import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
 
-type AccountType = "regular" | "nonprofit";
-type OrganizationVerificationStatus = "pending" | "verified" | "rejected" | "suspended";
 
-type AuthProfile = {
-  id: string;
-  display_name: string;
-  service_area: string | null;
-  account_type: AccountType;
-};
-
-type AuthOrganization = {
-  id: string;
-  name: string;
-  verification_status: OrganizationVerificationStatus;
-  sponsorship_enabled: boolean;
-  role: "owner" | "admin" | "member";
-};
-
-type AuthCapabilities = {
-  can_post_tasks: boolean;
-  can_accept_tasks: boolean;
-  can_receive_sponsorship_requests: boolean;
-  can_sponsor_tasks: boolean;
-};
-
-type SignUpInput = {
-  accountType: AccountType;
-  fullName: string;
-  email: string;
-  password: string;
-  approximateArea: AreaId;
-  standardsAccepted: boolean;
-  organizationName?: string;
-  organizationWebsite?: string;
-};
-
-type AuthActionResult = {
-  ok: boolean;
-  message?: string;
-  confirmationRequired?: boolean;
-};
-
-const emptyCapabilities = (): AuthCapabilities => ({
-  can_post_tasks: false,
-  can_accept_tasks: false,
-  can_receive_sponsorship_requests: false,
-  can_sponsor_tasks: false,
-});
-
-type TabId = "nearby" | "post" | "activity" | "messages" | "profile";
-type TaskMode = "paid" | "community" | "sponsored";
-type PaidStage =
-  | "Payment secured"
-  | "In progress"
-  | "Completion pending"
-  | "Payout released"
-  | "Completed"
-  | "Reopened";
-type CommunityStage = "Committed" | "Checked in" | "Completion pending" | "Completed" | "Canceled";
-type MessageItem = { id: number; mine: boolean; text: string };
-type TaskEvent = { id: number; text: string };
-
-function appendTaskEvent(
-  setter: Dispatch<SetStateAction<Record<string, TaskEvent[]>>>,
-  taskId: string,
-  text: string,
-) {
-  setter((current) => {
-    const previous = current[taskId] ?? [];
-    return {
-      ...current,
-      [taskId]: [...previous, { id: Date.now() + previous.length, text }],
-    };
-  });
-}
-
-type LatLng = { lat: number; lng: number };
-type AreaId = "all" | "downtown" | "temescal" | "fruitvale" | "westoak" | "alameda" | "montreal";
-type MicroArea = { id: AreaId; label: string; blurb: string; center: LatLng; zoom: number; minZoom: number; maxZoom: number; spanMi: number };
-
-// Bounded area enum. The user never picks an arbitrary point, so discovery and
-// map framing stay inside the launch regions without geocoding free-form text.
-const areas: MicroArea[] = [
-  { id: "all", label: "Oakland & Alameda", blurb: "All demo neighborhoods", center: { lat: 37.8045, lng: -122.262 }, zoom: 12, minZoom: 11, maxZoom: 17, spanMi: 9 },
-  { id: "downtown", label: "Downtown & Lake Merritt", blurb: "Neighborhood results", center: { lat: 37.8044, lng: -122.2712 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
-  { id: "temescal", label: "Temescal & Rockridge", blurb: "Neighborhood results", center: { lat: 37.838, lng: -122.256 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
-  { id: "fruitvale", label: "Fruitvale & San Antonio", blurb: "Neighborhood results", center: { lat: 37.78, lng: -122.23 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
-  { id: "westoak", label: "West Oakland & Jack London", blurb: "Neighborhood results", center: { lat: 37.803, lng: -122.29 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
-  { id: "alameda", label: "Alameda Island", blurb: "Neighborhood results", center: { lat: 37.765, lng: -122.245 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
-  { id: "montreal", label: "Island of Montréal", blurb: "Montréal, QC", center: { lat: 45.519, lng: -73.585 }, zoom: 12, minZoom: 10, maxZoom: 18, spanMi: 16 },
-];
-
-// Panning is fenced to the chosen area so the map cannot wander off to another
-// city; zoom is clamped so it can neither leave the area nor dive past street level.
-function areaBounds(area: MicroArea) {
-  const latSpan = area.spanMi / 69;
-  const lngSpan = area.spanMi / (69 * Math.cos((area.center.lat * Math.PI) / 180));
-  return {
-    north: area.center.lat + latSpan,
-    south: area.center.lat - latSpan,
-    east: area.center.lng + lngSpan,
-    west: area.center.lng - lngSpan,
-  };
-}
-
-function areaById(id: AreaId): MicroArea {
-  return areas.find((area) => area.id === id) ?? areas[0];
-}
-
-function areaIdFromServiceArea(value?: string | null): AreaId {
-  if (!value) return "all";
-  const normalized = value.trim().toLowerCase();
-  return areas.find((area) => area.id === normalized || area.label.toLowerCase() === normalized)?.id ?? "all";
-}
-
-function distanceMiles(from: LatLng, to: LatLng) {
-  const earthRadiusMiles = 3958.8;
-  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
-  const deltaLat = toRadians(to.lat - from.lat);
-  const deltaLng = toRadians(to.lng - from.lng);
-  const haversine =
-    Math.sin(deltaLat / 2) ** 2 +
-    Math.cos(toRadians(from.lat)) * Math.cos(toRadians(to.lat)) * Math.sin(deltaLng / 2) ** 2;
-  return 2 * earthRadiusMiles * Math.asin(Math.sqrt(haversine));
-}
-
-function formatDistance(miles: number) {
-  return miles < 0.1 ? "under 0.1 mi" : `${miles.toFixed(1)} mi`;
-}
-
-const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? import.meta.env.VITE_GOOGLE_MAPS_STATIC_KEY ?? "";
-// Advanced (HTML) markers require a cloud-configured Map ID. DEMO_MAP_ID works
-// for development; a real Map ID should be created before any deploy.
-const mapsMapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID ?? "DEMO_MAP_ID";
-
-// Web Mercator, matching how Google frames a static map, so a task coordinate
-// becomes a pixel offset from the requested centre.
-function projectToWorld(point: LatLng) {
-  const clampedSin = Math.min(Math.max(Math.sin((point.lat * Math.PI) / 180), -0.9999), 0.9999);
-  return {
-    x: 256 * (0.5 + point.lng / 360),
-    y: 256 * (0.5 - Math.log((1 + clampedSin) / (1 - clampedSin)) / (4 * Math.PI)),
-  };
-}
-
-function pixelOffsetFromCenter(point: LatLng, center: LatLng, zoom: number) {
-  const worldScale = 2 ** zoom;
-  const projected = projectToWorld(point);
-  const projectedCenter = projectToWorld(center);
-  return { x: (projected.x - projectedCenter.x) * worldScale, y: (projected.y - projectedCenter.y) * worldScale };
-}
-
-function staticMapUrl(center: LatLng, zoom: number, width: number, height: number) {
-  if (!mapsApiKey) return "";
-  const params = new URLSearchParams({
-    center: `${center.lat},${center.lng}`,
-    zoom: String(zoom),
-    size: `${width}x${height}`,
-    scale: "2",
-    maptype: "roadmap",
-    key: mapsApiKey,
-  });
-  const styles = [
-    "feature:poi|visibility:off",
-    "feature:transit|visibility:off",
-    "feature:road|element:labels.icon|visibility:off",
-  ];
-  return `https://maps.googleapis.com/maps/api/staticmap?${params}&${styles.map((style) => `style=${encodeURIComponent(style)}`).join("&")}`;
-}
-
-type Task = {
-  id: string;
-  title: string;
-  description: string;
-  mode: TaskMode;
-  earning?: number;
-  coords: LatLng;
-  areaId: AreaId;
-  area: string;
-  time: string;
-  duration: string;
-  icon: Icon;
-  youthEligible?: boolean;
-  category?: string;
-  included?: string;
-  excluded?: string;
-  completion?: string;
-  privateAddress?: string;
-  photo?: string;
-  requesterName?: string;
-  requesterInitials?: string;
-  requesterAvatar?: string;
-  ownerPersona?: Persona;
-  listingPaused?: boolean;
-  /** Requester-described rather than chosen from the reviewed catalog. */
-  customPending?: boolean;
-  /** Set when the listing came from Supabase rather than local fixtures. */
-  ownerId?: string;
-};
-
-type PostDraft = {
-  mode: TaskMode;
-  /** Catalog entry the listing is built from. Listings exist only for catalog tasks. */
-  templateId: string;
-  /** Answers to that entry's bounded options, keyed by option id. */
-  selections: Record<string, string>;
-  /** Set only when the requester described a task the catalog does not carry. */
-  customTitle: string;
-  customDetails: string;
-  customCategoryId: string;
-  customMinutes: number;
-  customCompletionId: string;
-  /** One of `dateChoicesFor(now)` — derived from the date, not a fixed enum. */
-  dateChoice: string;
-  startTime: string;
-  privateAddress: string;
-  amount: string;
-  photoAcknowledged: boolean;
-  photoPreview: string;
-  riskConfirmed: boolean;
-  safetyConfirmed: boolean;
-};
-
-type Persona = "adult" | "youth" | "guardian";
-
-type CompletionSubmission = {
-  note: string;
-  evidencePreview: string;
-};
-
-type RoleReview = {
-  rating: number;
-  tags: string[];
-  saved: boolean;
-};
-
-type TaskReviewState = {
-  helper: RoleReview;
-  requester: RoleReview;
-};
-
-function emptyTaskReview(): TaskReviewState {
-  return {
-    helper: { rating: 0, tags: [], saved: false },
-    requester: { rating: 0, tags: [], saved: false },
-  };
-}
-
-type PersonaSessionState = {
-  selectedTaskId: string;
-  paidStage: PaidStage;
-  activeTask: Task;
-  communityTask: Task | null;
-  communityStage: CommunityStage;
-  communityChecks: boolean[];
-  postedTask: Task | null;
-  postDraft: PostDraft;
-  acceptedTaskIds: string[];
-  closedTaskIds: string[];
-  acceptedTaskActors: Record<string, "adult" | "youth">;
-  taskEvents: Record<string, TaskEvent[]>;
-  activityPerspective: "helper" | "requester";
-  savedTaskIds: string[];
-  sponsorFunded: boolean;
-  sponsorSeeking: boolean;
-  threadMessages: Record<string, MessageItem[]>;
-  blockedThreadIds: string[];
-  blockedRequesterNames: string[];
-  reportedTaskIds: string[];
-  reportReasons: Record<string, string>;
-  completionSubmissions: Record<string, CompletionSubmission>;
-  taskReviews: Record<string, TaskReviewState>;
-  notificationsEnabled: boolean;
-  profileAreaId: AreaId;
-};
-
-/** Half-hour slots a task may start in. Bounded so no start time is free-typed. */
-const startTimeSlots = ["7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM", "9:30 AM", "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM", "12:00 PM", "12:30 PM", "1:00 PM", "1:30 PM", "2:00 PM", "2:30 PM", "3:00 PM", "3:30 PM", "4:00 PM", "4:30 PM", "5:00 PM", "5:30 PM", "6:00 PM", "6:30 PM", "7:00 PM"];
-
-/** Shortest notice a neighbor is asked to accept, in minutes. */
-const sameDayLeadMinutes = 60;
-const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-/** "10:30 AM" -> minutes since midnight. */
-function slotMinutes(slot: string): number {
-  const parts = slot.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!parts) return 0;
-  return ((Number(parts[1]) % 12) + (/pm/i.test(parts[3]) ? 12 : 0)) * 60 + Number(parts[2]);
-}
-
-/** Slots still far enough out to be worth asking for today. */
-function slotsRemainingToday(now: Date): string[] {
-  const cutoff = now.getHours() * 60 + now.getMinutes() + sameDayLeadMinutes;
-  return startTimeSlots.filter((slot) => slotMinutes(slot) >= cutoff);
-}
-
-/**
- * The "when" options, derived from the clock rather than hardcoded. Today drops
- * out once it is too late in the day to give anyone reasonable notice, and the
- * third option is a real weekday two days out so it can never collide with
- * Today or Tomorrow the way a fixed "Saturday" did.
- */
-function dateChoicesFor(now: Date): string[] {
-  const later = new Date(now);
-  later.setDate(later.getDate() + 2);
-  return [...(slotsRemainingToday(now).length ? ["Today"] : []), "Tomorrow", weekdayNames[later.getDay()], "Flexible"];
-}
-
-const exampleTemplate = templateById("yard-lavender") ?? taskTemplates[0];
-const exampleSelections = defaultSelections(exampleTemplate);
-
-const initialPostDraft: PostDraft = {
-  mode: "paid",
-  templateId: exampleTemplate.id,
-  selections: exampleSelections,
-  customTitle: "",
-  customDetails: "",
-  customCategoryId: "home",
-  customMinutes: 60,
-  customCompletionId: "confirm",
-  dateChoice: "Tomorrow",
-  startTime: "10:00 AM",
-  privateAddress: "214 Garden Walk",
-  amount: String(composeListing(exampleTemplate, exampleSelections).suggestedPay),
-  photoAcknowledged: false,
-  photoPreview: "",
-  riskConfirmed: false,
-  safetyConfirmed: false,
-};
-
-const tasks: Task[] = [
-  {
-    id: "leaves",
-    title: "Front yard leaf cleanup",
-    description: "Rake leaves and bag them for green bins.",
-    mode: "sponsored",
-    earning: 35,
-    coords: { lat: 37.7792, lng: -122.2281 },
-    areaId: "fruitvale",
-    area: "Fruitvale",
-    time: "Today · 3:00 PM",
-    duration: "60–90 min",
-    icon: Leaf,
-    category: "Yard & garden",
-    included: "Rake the front lawn and walkway; fill the provided green-waste bags",
-    excluded: "No ladder, roof, gutters, tree trimming, hauling, or power tools",
-    completion: "Front lawn and walkway are clear, bags are tied, and one privacy-safe final photo is added.",
-    photo: "/assets/micro/front-yard-leaves.webp",
-  },
-  {
-    id: "boxes",
-    title: "Move two boxed lamps",
-    description: "Carry two sealed boxes from the porch into the garage.",
-    mode: "paid",
-    earning: 18,
-    coords: { lat: 37.8064, lng: -122.2934 },
-    areaId: "westoak",
-    area: "West Oakland",
-    time: "Tomorrow · 10:00 AM",
-    duration: "20–30 min",
-    icon: Package,
-    category: "Home help",
-    included: "Carry two sealed lamp boxes from the porch into the garage",
-    excluded: "No stairs, unpacking, furniture moving, or entry beyond the garage",
-    completion: "Both sealed boxes are placed in the marked garage area without damage.",
-  },
-  {
-    id: "tablet",
-    title: "Set up a tablet for video calls",
-    description: "Make the text larger and pin the video-call app to the home screen.",
-    mode: "community",
-    coords: { lat: 37.8362, lng: -122.2603 },
-    areaId: "temescal",
-    area: "Temescal",
-    time: "Saturday · 11:00 AM",
-    duration: "About 45 min",
-    icon: UsersThree,
-    category: "Tech help",
-    included: "Increase text size and contrast; pin the video-call app to the home screen",
-    excluded: "No passwords, purchases, account recovery, or access to private messages",
-    completion: "June can read the larger text and open the pinned video-call app.",
-  },
-  {
-    id: "pantry",
-    title: "Pack pantry donation bags",
-    description: "Sort shelf-stable groceries at the community center.",
-    mode: "sponsored",
-    earning: 24,
-    coords: { lat: 37.7861, lng: -122.2401 },
-    areaId: "fruitvale",
-    area: "San Antonio",
-    time: "Saturday · 9:30 AM",
-    duration: "60 min",
-    icon: HandHeart,
-    youthEligible: true,
-    category: "Community & mutual aid",
-    included: "Sort shelf-stable groceries; pack labeled donation bags with staff present",
-    excluded: "No driving, heavy lifting, food handling outside staff guidance, or private-home entry",
-    completion: "Assigned bags are packed, counted, and checked by the pantry coordinator.",
-  },
-  {
-    id: "hedge",
-    title: "Trim a short front hedge",
-    description: "Shape the waist-high hedge and sweep the walkway afterward.",
-    mode: "paid",
-    earning: 22,
-    coords: { lat: 37.8442, lng: -122.2513 },
-    areaId: "temescal",
-    area: "Rockridge",
-    time: "Sunday · 9:00 AM",
-    duration: "45–60 min",
-    icon: Scissors,
-    category: "Yard & garden",
-    included: "Shape the waist-high front hedge; sweep clippings from the walkway",
-    excluded: "No ladder, chainsaw, power tool, or work above shoulder height",
-    completion: "The hedge is evenly trimmed and the public walkway is clear.",
-  },
-  {
-    id: "table",
-    title: "Set up two folding tables",
-    description: "Help a neighborhood group prepare a public-room craft table.",
-    mode: "community",
-    coords: { lat: 37.7649, lng: -122.2447 },
-    areaId: "alameda",
-    area: "Alameda",
-    time: "Sunday · 1:00 PM",
-    duration: "About 30 min",
-    icon: House,
-    category: "Community & mutual aid",
-    included: "Unfold two lightweight tables; arrange chairs in the public craft room",
-    excluded: "No vehicle use, lifting over 20 pounds, or private-room access",
-    completion: "Two stable tables and the requested chairs are ready before the event.",
-  },
-  {
-    id: "stoop",
-    title: "Shovel a front stoop and stairs",
-    description: "Clear overnight snow from the stairs and the walkway to the sidewalk.",
-    mode: "paid",
-    earning: 26,
-    coords: { lat: 45.5231, lng: -73.5803 },
-    areaId: "montreal",
-    area: "Le Plateau-Mont-Royal",
-    time: "Tomorrow · 8:00 AM",
-    duration: "30–45 min",
-    icon: House,
-    category: "Home help",
-    included: "Clear the exterior staircase and the walkway to the sidewalk; spread the provided salt",
-    excluded: "No roof, balcony, ladder, or clearing a parked car",
-    completion: "Stairs and walkway are clear and salted before the morning.",
-  },
-  {
-    id: "brunch",
-    title: "Set up chairs for a community brunch",
-    description: "Help arrange tables and chairs in a neighbourhood community hall.",
-    mode: "community",
-    coords: { lat: 45.5232, lng: -73.6002 },
-    areaId: "montreal",
-    area: "Mile End",
-    time: "Sunday · 10:00 AM",
-    duration: "About 40 min",
-    icon: UsersThree,
-    category: "Community & mutual aid",
-    included: "Unfold tables and arrange chairs in the main hall with an organizer present",
-    excluded: "No food handling, vehicle use, or lifting over 20 pounds",
-    completion: "The hall is arranged as the organizer requested before guests arrive.",
-  },
-];
-
-const sponsoredFixtureTask: Task = {
-  id: "grocery-sponsored",
-  title: "Grocery pickup for Ana",
-  description: "Pick up a prepaid grocery order and carry it to the front door.",
-  mode: "sponsored",
-  earning: 24,
-  coords: { lat: 37.7703, lng: -122.2534 },
-  areaId: "alameda",
-  area: "Alameda West End",
-  time: "Saturday · 2:00 PM",
-  duration: "About 45 min",
-  icon: Package,
-  category: "Errands & pickup",
-  included: "Collect the prepaid order and carry the bags to the front door.",
-  excluded: "No purchasing, substitutions, or entry into the home.",
-  completion: "Order is delivered to the front door and confirmed in the task thread.",
-};
-
-const pastThreadTasks: Task[] = [
-  { ...tasks[0], id: "leaves-history", time: "Completed July 28" },
-  { ...tasks[1], id: "boxes-history", time: "Completed July 21" },
-  { ...tasks[2], id: "tablet-history", time: "Completed July 16" },
-];
-
-const modeMeta: Record<
-  TaskMode,
-  { label: string; shortLabel: string; icon: Icon; color: string }
-> = {
-  paid: { label: "Paid task", shortLabel: "Paid", icon: Tag, color: "teal" },
-  community: { label: "Community Help", shortLabel: "Volunteer", icon: HandHeart, color: "blue" },
-  sponsored: { label: "Sponsored", shortLabel: "Sponsored", icon: Sparkle, color: "purple" },
-};
 
 type MicroContextValue = {
   activeTab: TabId;
@@ -655,6 +160,9 @@ type MicroContextValue = {
   setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
   notificationsEnabled: boolean;
   setNotificationsEnabled: (enabled: boolean) => void;
+  /** Special jobs already read in Notifications, so the bell stops pinging for them. */
+  seenSpecialJobIds: string[];
+  setSeenSpecialJobIds: Dispatch<SetStateAction<string[]>>;
   profileAreaId: AreaId;
   setProfileAreaId: (areaId: AreaId) => void;
   profilePhotos: Record<Persona, string>;
@@ -1141,6 +649,9 @@ function MicroProvider({ children }: { children: ReactNode }) {
   const [completionSubmissions, setCompletionSubmissions] = useState<Record<string, CompletionSubmission>>({});
   const [taskReviews, setTaskReviews] = useState<Record<string, TaskReviewState>>({});
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  // Deliberately outside the persona snapshots: "already read" is session UI
+  // state, not part of a seeded persona fixture.
+  const [seenSpecialJobIds, setSeenSpecialJobIds] = useState<string[]>([]);
   const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
   const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
   const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
@@ -1264,12 +775,14 @@ function MicroProvider({ children }: { children: ReactNode }) {
       setTaskReviews,
       notificationsEnabled,
       setNotificationsEnabled,
+      seenSpecialJobIds,
+      setSeenSpecialJobIds,
       profileAreaId,
       setProfileAreaId,
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
@@ -1972,7 +1485,7 @@ function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId) {
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -2018,7 +1531,9 @@ function NearbyScreen() {
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
   const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0];
-  const specialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId) : [];
+  // The bell pings for jobs this profile has not read yet; opening
+  // Notifications marks them read, so it goes quiet until a new one appears.
+  const unreadSpecialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId).filter((task) => !seenSpecialJobIds.includes(task.id)) : [];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
   const activeFilterCount = Number(mode !== "all") + categories.length + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
   const mapTasks = primaryVisibleTask
@@ -2056,9 +1571,9 @@ function NearbyScreen() {
               <span>{activeArea.label}</span>
               <CaretDown size={16} weight="bold" aria-hidden="true" />
             </button>
-            <button className="notify-quick-button" data-ping={specialJobs.length ? "true" : "false"} aria-label={specialJobs.length ? `Notifications · ${specialJobs.length} special ${specialJobs.length === 1 ? "job" : "jobs"} for you` : "Notifications"} onClick={() => { keyboard.hide(); flow.push(makeNotificationsScreen()); }}>
-              <Bell size={24} weight={specialJobs.length ? "fill" : "regular"} aria-hidden="true" />
-              {specialJobs.length ? <span className="notify-ping" data-testid="special-job-ping" aria-hidden="true">{specialJobs.length}</span> : null}
+            <button className="notify-quick-button" data-ping={unreadSpecialJobs.length ? "true" : "false"} aria-label={unreadSpecialJobs.length ? `Notifications · ${unreadSpecialJobs.length} new special ${unreadSpecialJobs.length === 1 ? "job" : "jobs"} for you` : "Notifications"} onClick={() => { keyboard.hide(); flow.push(makeNotificationsScreen()); }}>
+              <Bell size={24} weight={unreadSpecialJobs.length ? "fill" : "regular"} aria-hidden="true" />
+              {unreadSpecialJobs.length ? <span className="notify-ping" data-testid="special-job-ping" aria-hidden="true">{unreadSpecialJobs.length}</span> : null}
             </button>
             <button className="profile-quick-button" aria-label="Open profile" onClick={() => setActiveTab("profile")}><UserCircle size={28} weight="regular" aria-hidden="true" /></button>
           </header>
@@ -3212,15 +2727,17 @@ function makeNotificationsScreen(): FlowScreen {
 function NotificationsScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, profileAreaId } = useMicro();
+  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, remoteTasks, blockedThreadIds, blockedRequesterNames, profileAreaId, setSelectedTaskId, setSeenSpecialJobIds } = useMicro();
   const openTab = (tab: TabId) => { setActiveTab(tab); flow.pop(); };
+  // A job notice opens that job, not just the tab it lives on.
+  const openJob = (task: Task) => { setSelectedTaskId(task.id); setActiveTab("nearby"); flow.replace(makeTaskScreen(task)); };
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
   const actorTasks = [activeTask, communityTask].filter((task): task is Task => Boolean(task && actor && acceptedTaskActors[task.id] === actor && (acceptedTaskIds.includes(task.id) || taskEvents[task.id]?.length)));
   const lifecycleTask = actorTasks.find((task) => acceptedTaskIds.includes(task.id)) ?? [...actorTasks].sort((first, second) => (taskEvents[second.id]?.at(-1)?.id ?? 0) - (taskEvents[first.id]?.at(-1)?.id ?? 0))[0];
   const activeMatch = Boolean(lifecycleTask && acceptedTaskIds.includes(lifecycleTask.id));
   const latestEvent = lifecycleTask ? taskEvents[lifecycleTask.id]?.at(-1) : null;
   const isLiveNonprofit = Boolean(auth.session && auth.organization && auth.accountType === "nonprofit");
-  const notices: { icon: Icon; title: string; copy: string; time: string; tab: TabId }[] = [
+  const notices: { icon: Icon; title: string; copy: string; time: string; tab: TabId; task?: Task }[] = [
     { icon: Bell, title: "Nearby help refreshed", copy: "Browse the current local paid, volunteer, and sponsored fixtures.", time: "Now", tab: "nearby" },
   ];
   if (isLiveNonprofit) {
@@ -3233,9 +2750,10 @@ function NotificationsScreen() {
       tab: "activity",
     });
   }
-  // The Nearby bell counts these, so the list has to name the same jobs.
-  const specialJobs = specialJobsFor([...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId)
-    .filter((task) => !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused);
+  // The Nearby bell counts these, so the list has to name the same jobs: same
+  // pool, same exclusions, or the badge would promise a notice that isn't here.
+  const specialJobs = specialJobsFor([...remoteTasks, ...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId)
+    .filter((task) => !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester));
   for (const task of [...specialJobs].reverse()) {
     notices.unshift({
       icon: task.mode === "sponsored" ? Sparkle : ShieldCheck,
@@ -3243,6 +2761,7 @@ function NotificationsScreen() {
       copy: `${task.title} · ${task.area} · ${task.time}${task.earning ? ` · $${task.earning}` : ""}`,
       time: "Now",
       tab: "nearby",
+      task,
     });
   }
   if (youthApprovalTaskId && (persona === "guardian" || persona === "youth")) notices.unshift({ icon: ShieldCheck, title: persona === "guardian" ? "Youth task needs your review" : "Guardian review requested", copy: "The exact pantry-task scope and time are ready for a task-specific decision.", time: "Now", tab: "profile" });
@@ -3258,7 +2777,7 @@ function NotificationsScreen() {
   if (lifecycleTask && moderationHolds[lifecycleTask.id]) notices.push({ icon: Warning, title: "Support review is open", copy: "Participant actions remain paused; only support authority can resolve the task report.", time: "Now", tab: "activity" });
   if (latestEvent) notices.push({ icon: CheckCircle, title: "Latest task record", copy: latestEvent.text, time: "Now", tab: "activity" });
   if (lifecycleTask?.mode !== "community" && (paidStage === "Payout released" || paidStage === "Completed")) notices.push({ icon: CurrencyDollar, title: "Test payout receipt", copy: "No real money moved; the simulated receipt remains in Payments & payouts.", time: "Now", tab: "profile" });
-  return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><p className="eyebrow">Seeded in-app events</p><h1>Useful, not noisy.</h1><p className="lead">Each notice names the task state and opens the place where someone can act.</p>{!notificationsEnabled ? <div className="truth-card" role="status"><Bell size={21} /><div><strong>Task notifications are paused</strong><span>Existing in-app records remain visible. No push delivery is connected.</span><button className="text-button" onClick={() => setNotificationsEnabled(true)}>Turn on for this profile</button></div></div> : null}<div className="notification-list">{notices.map(({ icon: NoticeIcon, title, copy, time, tab }) => <button key={title} className="notification-row" onClick={() => openTab(tab)}><span className="notification-icon"><NoticeIcon size={20} weight="fill" /></span><span><strong>{title}</strong><small>{copy}</small></span><time>{time}</time></button>)}</div><div className="demo-card"><Info size={20} /><div><strong>Local fixtures only</strong><span>Push delivery and notification preferences need a live account and backend later.</span></div></div></div></MobileScroll>;
+  return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><p className="eyebrow">Seeded in-app events</p><h1>Useful, not noisy.</h1><p className="lead">Each notice names the task state and opens the place where someone can act.</p>{!notificationsEnabled ? <div className="truth-card" role="status"><Bell size={21} /><div><strong>Task notifications are paused</strong><span>Existing in-app records remain visible. No push delivery is connected.</span><button className="text-button" onClick={() => setNotificationsEnabled(true)}>Turn on for this profile</button></div></div> : null}<div className="notification-list">{notices.map(({ icon: NoticeIcon, title, copy, time, tab }) => <button key={`${title}·${copy}`} className="notification-row" onClick={() => openTab(tab)}><span className="notification-icon"><NoticeIcon size={20} weight="fill" /></span><span><strong>{title}</strong><small>{copy}</small></span><time>{time}</time></button>)}</div><div className="demo-card"><Info size={20} /><div><strong>Local fixtures only</strong><span>Push delivery and notification preferences need a live account and backend later.</span></div></div></div></MobileScroll>;
 }
 
 function makeCommunityJourneyScreen(task: Task): FlowScreen {

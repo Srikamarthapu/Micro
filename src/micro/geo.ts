@@ -1,0 +1,99 @@
+/**
+ * Micro's geography: the bounded area enum, distance maths, and the Web
+ * Mercator projection the map pins are placed with. Kept apart from the app so
+ * a coordinate question has one place to be answered.
+ */
+
+export type LatLng = { lat: number; lng: number };
+export type AreaId = "all" | "downtown" | "temescal" | "fruitvale" | "westoak" | "alameda" | "montreal";
+export type MicroArea = { id: AreaId; label: string; blurb: string; center: LatLng; zoom: number; minZoom: number; maxZoom: number; spanMi: number };
+
+// Bounded area enum. The user never picks an arbitrary point, so discovery and
+// map framing stay inside the launch regions without geocoding free-form text.
+export const areas: MicroArea[] = [
+  { id: "all", label: "Oakland & Alameda", blurb: "All demo neighborhoods", center: { lat: 37.8045, lng: -122.262 }, zoom: 12, minZoom: 11, maxZoom: 17, spanMi: 9 },
+  { id: "downtown", label: "Downtown & Lake Merritt", blurb: "Neighborhood results", center: { lat: 37.8044, lng: -122.2712 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "temescal", label: "Temescal & Rockridge", blurb: "Neighborhood results", center: { lat: 37.838, lng: -122.256 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "fruitvale", label: "Fruitvale & San Antonio", blurb: "Neighborhood results", center: { lat: 37.78, lng: -122.23 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "westoak", label: "West Oakland & Jack London", blurb: "Neighborhood results", center: { lat: 37.803, lng: -122.29 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "alameda", label: "Alameda Island", blurb: "Neighborhood results", center: { lat: 37.765, lng: -122.245 }, zoom: 13, minZoom: 12, maxZoom: 18, spanMi: 5 },
+  { id: "montreal", label: "Island of Montréal", blurb: "Montréal, QC", center: { lat: 45.519, lng: -73.585 }, zoom: 12, minZoom: 10, maxZoom: 18, spanMi: 16 },
+];
+
+// Panning is fenced to the chosen area so the map cannot wander off to another
+// city; zoom is clamped so it can neither leave the area nor dive past street level.
+export function areaBounds(area: MicroArea) {
+  const latSpan = area.spanMi / 69;
+  const lngSpan = area.spanMi / (69 * Math.cos((area.center.lat * Math.PI) / 180));
+  return {
+    north: area.center.lat + latSpan,
+    south: area.center.lat - latSpan,
+    east: area.center.lng + lngSpan,
+    west: area.center.lng - lngSpan,
+  };
+}
+
+export function areaById(id: AreaId): MicroArea {
+  return areas.find((area) => area.id === id) ?? areas[0];
+}
+
+export function areaIdFromServiceArea(value?: string | null): AreaId {
+  if (!value) return "all";
+  const normalized = value.trim().toLowerCase();
+  return areas.find((area) => area.id === normalized || area.label.toLowerCase() === normalized)?.id ?? "all";
+}
+
+export function distanceMiles(from: LatLng, to: LatLng) {
+  const earthRadiusMiles = 3958.8;
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const deltaLat = toRadians(to.lat - from.lat);
+  const deltaLng = toRadians(to.lng - from.lng);
+  const haversine =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(toRadians(from.lat)) * Math.cos(toRadians(to.lat)) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * earthRadiusMiles * Math.asin(Math.sqrt(haversine));
+}
+
+export function formatDistance(miles: number) {
+  return miles < 0.1 ? "under 0.1 mi" : `${miles.toFixed(1)} mi`;
+}
+
+export const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? import.meta.env.VITE_GOOGLE_MAPS_STATIC_KEY ?? "";
+// Advanced (HTML) markers require a cloud-configured Map ID. DEMO_MAP_ID works
+// for development; a real Map ID should be created before any deploy.
+export const mapsMapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID ?? "DEMO_MAP_ID";
+
+// Web Mercator, matching how Google frames a static map, so a task coordinate
+// becomes a pixel offset from the requested centre.
+export function projectToWorld(point: LatLng) {
+  const clampedSin = Math.min(Math.max(Math.sin((point.lat * Math.PI) / 180), -0.9999), 0.9999);
+  return {
+    x: 256 * (0.5 + point.lng / 360),
+    y: 256 * (0.5 - Math.log((1 + clampedSin) / (1 - clampedSin)) / (4 * Math.PI)),
+  };
+}
+
+export function pixelOffsetFromCenter(point: LatLng, center: LatLng, zoom: number) {
+  const worldScale = 2 ** zoom;
+  const projected = projectToWorld(point);
+  const projectedCenter = projectToWorld(center);
+  return { x: (projected.x - projectedCenter.x) * worldScale, y: (projected.y - projectedCenter.y) * worldScale };
+}
+
+export function staticMapUrl(center: LatLng, zoom: number, width: number, height: number) {
+  if (!mapsApiKey) return "";
+  const params = new URLSearchParams({
+    center: `${center.lat},${center.lng}`,
+    zoom: String(zoom),
+    size: `${width}x${height}`,
+    scale: "2",
+    maptype: "roadmap",
+    key: mapsApiKey,
+  });
+  const styles = [
+    "feature:poi|visibility:off",
+    "feature:transit|visibility:off",
+    "feature:road|element:labels.icon|visibility:off",
+  ];
+  return `https://maps.googleapis.com/maps/api/staticmap?${params}&${styles.map((style) => `style=${encodeURIComponent(style)}`).join("&")}`;
+}
