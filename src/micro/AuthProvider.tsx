@@ -1,7 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { supabase, supabaseConfig } from "../supabase";
-import { emptyCapabilities, type AccountType, type AuthActionResult, type AuthCapabilities, type AuthOrganization, type AuthProfile, type SignUpInput } from "./types";
+import { createEphemeralSupabaseClient, supabase, supabaseConfig } from "../supabase";
+import { emptyCapabilities, type AccountType, type AuthActionResult, type AuthCapabilities, type AuthOrganization, type AuthProfile, type DeleteAccountInput, type SignUpInput } from "./types";
+
+type DeleteAccountResponse = {
+  deleted?: boolean;
+  code?: string;
+  message?: string;
+  organizations?: Array<{ id: string; name: string }>;
+};
 
 /**
  * Everything about who is signed in: the Supabase session, the profile row,
@@ -15,6 +22,7 @@ export type AuthContextValue = {
   busy: boolean;
   accountLoading: boolean;
   accountError: string | null;
+  accountNotice: string | null;
   session: Session | null;
   profile: AuthProfile | null;
   organization: AuthOrganization | null;
@@ -23,12 +31,14 @@ export type AuthContextValue = {
   recoveryMode: boolean;
   demoMode: boolean;
   canSponsor: boolean;
+  requiresPasswordReauthentication: boolean;
   signIn: (email: string, password: string) => Promise<AuthActionResult>;
   signUp: (input: SignUpInput) => Promise<AuthActionResult>;
   resendConfirmation: (email: string) => Promise<AuthActionResult>;
   requestPasswordReset: (email: string) => Promise<AuthActionResult>;
   updatePassword: (password: string) => Promise<AuthActionResult>;
   createOrganization: (name: string, website?: string) => Promise<AuthActionResult>;
+  deleteAccount: (input: DeleteAccountInput) => Promise<AuthActionResult>;
   signOut: () => Promise<AuthActionResult>;
   reloadProfile: () => Promise<void>;
   enterDemo: () => void;
@@ -57,6 +67,25 @@ export function friendlyAuthError(error: unknown, fallback: string) {
   return fallback;
 }
 
+async function accountDeletionResponse(error: unknown, data: unknown): Promise<DeleteAccountResponse> {
+  if (data && typeof data === "object") return data as DeleteAccountResponse;
+  const context = error && typeof error === "object" && "context" in error
+    ? (error as { context?: unknown }).context
+    : null;
+  if (
+    !context
+    || typeof context !== "object"
+    || !("json" in context)
+    || typeof (context as { json?: unknown }).json !== "function"
+  ) return {};
+
+  try {
+    return await (context as Response).clone().json() as DeleteAccountResponse;
+  } catch {
+    return {};
+  }
+}
+
 export function initialsFromName(name: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return "M";
@@ -68,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [organization, setOrganization] = useState<AuthOrganization | null>(null);
@@ -246,7 +276,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const primaryAuthProvider = typeof session?.user.app_metadata?.provider === "string"
+    ? session.user.app_metadata.provider
+    : session?.user.identities?.[0]?.provider;
+  const requiresPasswordReauthentication = Boolean(
+    session && (!primaryAuthProvider || primaryAuthProvider === "email"),
+  );
+
   const signIn = async (email: string, password: string): Promise<AuthActionResult> => {
+    setAccountNotice(null);
     const missing = requireClient();
     if (missing) return missing;
     return runBusyAction(async () => {
@@ -258,6 +296,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signUp = async (input: SignUpInput): Promise<AuthActionResult> => {
+    setAccountNotice(null);
     const missing = requireClient();
     if (missing) return missing;
     return runBusyAction(async () => {
@@ -345,6 +384,174 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, "Micro couldn't create the organization profile. Check the name and try again.");
   };
 
+  const deleteAccount = async ({ password, confirmation }: DeleteAccountInput): Promise<AuthActionResult> => {
+    const missing = requireClient();
+    if (missing) return missing;
+    if (!session) {
+      return {
+        ok: false,
+        code: "authentication_required",
+        message: "Sign in again before deleting your account.",
+      };
+    }
+    if (confirmation !== "DELETE") {
+      return {
+        ok: false,
+        code: "confirmation_required",
+        message: "Type DELETE exactly as shown before continuing.",
+      };
+    }
+
+    const deletingUserId = session.user.id;
+    return runBusyAction(async () => {
+      let deletionClient = supabase!;
+      let freshAccessToken: string | null = null;
+      let temporaryClient = false;
+      const clearTemporarySession = async () => {
+        if (!temporaryClient) return;
+        try {
+          await deletionClient.auth.signOut({ scope: "local" });
+        } catch {
+          // This client is memory-only and is discarded after this action.
+        }
+      };
+
+      if (requiresPasswordReauthentication) {
+        const email = session.user.email;
+        if (!email || !password) {
+          return {
+            ok: false,
+            code: "reauthentication_required",
+            message: "Enter your current password before deleting this account.",
+          };
+        }
+
+        const ephemeralClient = createEphemeralSupabaseClient();
+        if (!ephemeralClient) {
+          return {
+            ok: false,
+            code: "account_deletion_unavailable",
+            message: "Micro couldn't start a secure deletion check. Try again later.",
+          };
+        }
+        deletionClient = ephemeralClient;
+        temporaryClient = true;
+
+        const { data: reauthentication, error: reauthenticationError } =
+          await deletionClient.auth.signInWithPassword({ email, password });
+        if (
+          reauthenticationError
+          || !reauthentication.session
+          || reauthentication.user?.id !== deletingUserId
+        ) {
+          await clearTemporarySession();
+          const reauthenticationMessage = reauthenticationError
+            && typeof reauthenticationError.message === "string"
+            && reauthenticationError.message.toLowerCase().includes("invalid login credentials")
+            ? "That password doesn't match this Micro account. Try again or reset it from the sign-in screen."
+            : friendlyAuthError(
+              reauthenticationError,
+              "That password could not be verified for this account. Try again or reset it from the sign-in screen.",
+            );
+          return {
+            ok: false,
+            code: "reauthentication_required",
+            message: reauthenticationMessage,
+          };
+        }
+        freshAccessToken = reauthentication.session.access_token;
+      }
+
+      if (activeUserIdRef.current !== deletingUserId) {
+        await clearTemporarySession();
+        return {
+          ok: false,
+          code: "authentication_changed",
+          message: "The signed-in account changed. Start account deletion again from Profile.",
+        };
+      }
+
+      let invocation: { data: DeleteAccountResponse | null; error: unknown };
+      try {
+        invocation = await deletionClient.functions.invoke<DeleteAccountResponse>("delete-account", {
+          body: { confirmation },
+          ...(freshAccessToken
+            ? { headers: { Authorization: `Bearer ${freshAccessToken}` } }
+            : {}),
+        });
+      } catch (invocationError) {
+        await clearTemporarySession();
+        throw invocationError;
+      }
+
+      const { data, error } = invocation;
+      const response = await accountDeletionResponse(error, data);
+      if (error || response.deleted !== true) {
+        await clearTemporarySession();
+        if (response.code === "organization_owner_transfer_required") {
+          const organizationName = response.organizations?.[0]?.name ?? organization?.name;
+          return {
+            ok: false,
+            code: response.code,
+            message: organizationName
+              ? `Choose another linked person as the active owner of ${organizationName} before deleting this account.`
+              : "Choose another linked person as the active owner of your nonprofit before deleting this account.",
+          };
+        }
+        if (response.code === "storage_cleanup_required") {
+          return {
+            ok: false,
+            code: response.code,
+            message: "Micro found account-owned files that must be safely removed first. Contact support before trying again.",
+          };
+        }
+        if (response.code === "reauthentication_required") {
+          return {
+            ok: false,
+            code: response.code,
+            message: requiresPasswordReauthentication
+              ? "Your secure sign-in expired. Enter your password again, then retry."
+              : "Your secure sign-in expired. Sign out, sign back in, and then retry.",
+          };
+        }
+        if (response.code === "authentication_required" || response.code === "invalid_session") {
+          return {
+            ok: false,
+            code: response.code,
+            message: "Your session is no longer valid. Sign in again before retrying.",
+          };
+        }
+        return {
+          ok: false,
+          code: response.code ?? "account_deletion_unconfirmed",
+          message: "Micro did not receive a deletion confirmation. Check your connection; if you can still sign in, retry from Profile.",
+        };
+      }
+
+      await clearTemporarySession();
+      // Auth deletion does not clear a browser's cached session. Clear it only
+      // after the server confirms that the authoritative hard delete succeeded.
+      try {
+        await supabase!.auth.signOut({ scope: "local" });
+      } catch {
+        // The server may already have removed the session. The confirmed delete
+        // remains authoritative, so clear the local React state below.
+      }
+      authEventSequenceRef.current += 1;
+      hydrationRequestRef.current += 1;
+      activeUserIdRef.current = null;
+      setSession(null);
+      setProfile(null);
+      setOrganization(null);
+      setCapabilities(emptyCapabilities());
+      setAccountError(null);
+      setAccountNotice("Your Micro account was deleted. You’re now signed out.");
+      setRecoveryMode(false);
+      setDemoMode(false);
+      return { ok: true };
+    }, "Micro couldn't confirm account deletion. Check your connection and try again.");
+  };
+
   const signOut = async (): Promise<AuthActionResult> => {
     if (demoMode) {
       setDemoMode(false);
@@ -399,6 +606,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     busy,
     accountLoading,
     accountError,
+    accountNotice,
     session,
     profile,
     organization,
@@ -407,17 +615,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     recoveryMode,
     demoMode,
     canSponsor: capabilities.can_sponsor_tasks,
+    requiresPasswordReauthentication,
     signIn,
     signUp,
     resendConfirmation,
     requestPasswordReset,
     updatePassword,
     createOrganization,
+    deleteAccount,
     signOut,
     reloadProfile,
-    enterDemo: () => setDemoMode(true),
+    enterDemo: () => {
+      setAccountNotice(null);
+      setDemoMode(true);
+    },
     exitDemo: () => setDemoMode(false),
-  }), [accountError, accountLoading, busy, capabilities, demoMode, initialized, organization, profile, recoveryMode, reloadProfile, session]);
+  }), [accountError, accountLoading, accountNotice, busy, capabilities, demoMode, initialized, organization, profile, recoveryMode, reloadProfile, requiresPasswordReauthentication, session]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

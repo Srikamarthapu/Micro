@@ -38,6 +38,7 @@ import {
   Sparkle,
   Star,
   Tag,
+  Trash,
   UserCircle,
   UsersThree,
   Warning,
@@ -231,6 +232,7 @@ function AuthWelcomeScreen() {
     <MobileScroll className="auth-experience auth-scroll">
       <main className="auth-welcome" data-testid="auth-welcome">
         <header className="auth-brand-lockup"><img className="brand-mark" src="/assets/micro/micro-mark.png" alt="" draggable={false} /><span className="auth-wordmark">Micro</span><span>helping nearby</span></header>
+        {auth.accountNotice ? <p className="auth-account-notice" role="status"><CheckCircle size={19} weight="fill" aria-hidden="true" /><span>{auth.accountNotice}</span></p> : null}
         <section className="auth-welcome-copy">
           <h1>Small tasks.<br />Real neighbors.</h1>
           <p>Post clearly scoped help, or lend a hand nearby.</p>
@@ -2777,8 +2779,109 @@ function ProfileScreen() {
         {!isLiveAccount ? <section className="settings-group"><h2>Participation fixtures</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section> : null}
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
         <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
-        <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Account access is live" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account and organization access. Nearby task data, approximate locations, payments, messages, and notifications remain preview fixtures." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
+        {isLiveAccount ? <section className="settings-group destructive-settings-group"><h2>Account controls</h2><button className="settings-row delete-account-row" onClick={() => flow.push(makeDeleteAccountScreen())}><span className="settings-icon"><Trash size={21} weight="bold" /></span><span><strong>Delete account</strong><small>Permanently remove your sign-in and Micro profile</small></span><ArrowRight size={18} /></button></section> : null}
+        <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Connected account" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account, organization access, published task listings, and their private addresses. Map markers, messages, payments, moderation, and notifications remain preview fixtures." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
       </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
+  );
+}
+
+function makeDeleteAccountScreen(): FlowScreen {
+  return {
+    id: "delete-account",
+    headerHeight: 66,
+    header: (flow) => <RouteHeader title="Delete account" onBack={flow.pop} />,
+    render: () => <DeleteAccountScreen />,
+  };
+}
+
+function DeleteAccountScreen() {
+  const flow = useFlow();
+  const keyboard = useKeyboard();
+  const auth = useAuth();
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState("");
+  const isNonprofit = Boolean(auth.organization && auth.accountType === "nonprofit");
+  const isOrganizationOwner = isNonprofit && auth.organization?.role === "owner";
+  const confirmationMatches = confirmation === "DELETE";
+  const ready = confirmationMatches
+    && (!auth.requiresPasswordReauthentication || Boolean(password));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    keyboard.hide();
+    if (!confirmationMatches) {
+      setErrorCode("confirmation_required");
+      setError("Type DELETE exactly as shown before continuing.");
+      window.setTimeout(() => document.getElementById("delete-confirmation")?.focus(), 0);
+      return;
+    }
+    if (auth.requiresPasswordReauthentication && !password) {
+      setErrorCode("reauthentication_required");
+      setError("Enter your current password before continuing.");
+      window.setTimeout(() => document.getElementById("delete-password")?.focus(), 0);
+      return;
+    }
+
+    setError("");
+    setErrorCode("");
+    const result = await auth.deleteAccount({
+      password: auth.requiresPasswordReauthentication ? password : undefined,
+      confirmation: "DELETE",
+    });
+    if (!result.ok) {
+      setErrorCode(result.code ?? "account_deletion_failed");
+      setError(result.message ?? "Micro couldn't confirm account deletion.");
+      if (result.code === "reauthentication_required") {
+        setPassword("");
+        window.setTimeout(() => document.getElementById("delete-password")?.focus(), 0);
+      }
+    }
+  };
+
+  return (
+    <MobileScroll className="app-screen route-scroll">
+      <main className="route-page route-bottom-pad delete-account-page">
+        <section className="delete-account-intro" aria-labelledby="delete-account-heading">
+          <span><Trash size={29} weight="duotone" aria-hidden="true" /></span>
+          <div>
+            <p className="eyebrow">Permanent account change</p>
+            <h1 id="delete-account-heading">Delete your Micro account?</h1>
+            <p>Nothing is removed until your identity, confirmation, and server-side safety checks all pass.</p>
+          </div>
+        </section>
+
+        <section className="delete-impact-card" aria-labelledby="delete-impact-heading">
+          <h2 id="delete-impact-heading">What this removes</h2>
+          <ul>
+            <li><CheckCircle size={18} weight="fill" aria-hidden="true" /><span>Your Micro sign-in and protected profile</span></li>
+            <li><CheckCircle size={18} weight="fill" aria-hidden="true" /><span>Your published task listings and their protected private addresses</span></li>
+            {isNonprofit ? <li><CheckCircle size={18} weight="fill" aria-hidden="true" /><span>Your membership in {auth.organization?.name ?? "the organization"}. An otherwise empty organization may be removed; organizations with linked people stay.</span></li> : null}
+            <li><CheckCircle size={18} weight="fill" aria-hidden="true" /><span>Your ability to return to this account—deletion cannot be undone</span></li>
+          </ul>
+        </section>
+
+        {isOrganizationOwner ? <section className="delete-owner-notice" role="note"><Buildings size={21} weight="fill" aria-hidden="true" /><div><strong>Organization ownership is protected</strong><p>If other people are linked to {auth.organization?.name ?? "this nonprofit"} and no successor owner exists, Micro will stop deletion until ownership is transferred. If no one else is linked, the empty organization can be removed with your account.</p></div></section> : null}
+
+        <div className="delete-account-identity"><EnvelopeSimple size={19} weight="fill" aria-hidden="true" /><span><strong>Deleting</strong><small>{auth.session?.user.email ?? "Signed-in Micro account"}</small></span></div>
+
+        <form className="delete-account-form" onSubmit={submit} noValidate>
+          {auth.requiresPasswordReauthentication ? <AuthInputField id="delete-password" label="Current password" icon={LockKey} type="password" value={password} onChange={(value) => { setPassword(value); if (errorCode === "reauthentication_required") { setError(""); setErrorCode(""); } }} autoComplete="current-password" placeholder="Your password" help="Verified directly with Supabase. Micro never sends your password to the deletion function." errorId={error && errorCode === "reauthentication_required" ? "delete-account-error" : undefined} invalid={Boolean(error) && errorCode === "reauthentication_required"} /> : <div className="delete-session-check"><ShieldCheck size={21} weight="fill" aria-hidden="true" /><div><strong>Secure-session check</strong><p>The server will verify your current signed-in session again before deleting anything.</p></div></div>}
+          <AuthInputField id="delete-confirmation" label="Type DELETE to confirm" icon={Trash} value={confirmation} onChange={(value) => { setConfirmation(value); if (errorCode === "confirmation_required") { setError(""); setErrorCode(""); } }} autoComplete="off" placeholder="DELETE" help="This extra step helps prevent an accidental tap." errorId={error && errorCode === "confirmation_required" ? "delete-account-error" : undefined} invalid={Boolean(error) && errorCode === "confirmation_required"} />
+
+          {errorCode === "organization_owner_transfer_required" ? <section id="delete-account-error" className="delete-account-blocker" role="alert"><Buildings size={22} weight="fill" aria-hidden="true" /><div><strong>Choose a successor owner first</strong><p>{error}</p><small>Your account and organization were not deleted.</small></div></section> : error ? <p id="delete-account-error" className="auth-form-error" role="alert"><Warning size={17} weight="fill" aria-hidden="true" /> {error}</p> : null}
+
+          <p className="delete-account-boundary"><Info size={17} weight="fill" aria-hidden="true" /> The live account, profile, published listings, and private addresses are deleted. Map markers, messages, payments, moderation, and notifications in this prototype remain local fixtures.</p>
+
+          <div className="delete-account-actions">
+            <button className="secondary-button" type="button" disabled={auth.busy} onClick={() => { keyboard.hide(); flow.pop(); }}>Keep my account</button>
+            <button className="danger-button" type="submit" disabled={auth.busy || !ready}>{auth.busy ? "Deleting account…" : "Delete account permanently"}</button>
+          </div>
+          <span className="sr-only" role="status" aria-live="polite">{auth.busy ? "Verifying and deleting account" : ""}</span>
+        </form>
+      </main>
+    </MobileScroll>
   );
 }
 

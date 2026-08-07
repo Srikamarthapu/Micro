@@ -21,3 +21,16 @@ export const supabase: SupabaseClient | null = supabaseConfig.configured
       },
     })
   : null;
+
+// Sensitive password checks should not replace or persist the primary app
+// session. This client lives only for the duration of that single operation.
+export function createEphemeralSupabaseClient(): SupabaseClient | null {
+  if (!supabaseConfig.configured) return null;
+  return createClient(url, publishableKey, {
+    auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      persistSession: false,
+    },
+  });
+}

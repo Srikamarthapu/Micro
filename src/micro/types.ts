@@ -48,6 +48,12 @@ export type AuthActionResult = {
   ok: boolean;
   message?: string;
   confirmationRequired?: boolean;
+  code?: string;
+};
+
+export type DeleteAccountInput = {
+  password?: string;
+  confirmation: "DELETE";
 };
 
 export const emptyCapabilities = (): AuthCapabilities => ({

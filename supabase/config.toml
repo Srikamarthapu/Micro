@@ -1,0 +1,5 @@
+
+[functions.delete-account]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/delete-account/index.ts"
