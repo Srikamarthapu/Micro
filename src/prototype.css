@@ -1315,6 +1315,17 @@
   font-weight: 700;
 }
 
+/* Full-screen map: the stage keeps its place in the DOM and simply grows, so
+   the map is resized rather than re-created. Top padding still clears the
+   status bar and bottom padding clears the persistent navigation. */
+.nearby-page[data-map-expanded="true"] { padding-bottom: 96px; }
+
+.nearby-page[data-map-expanded="true"] .brand-row,
+.nearby-page[data-map-expanded="true"] .search-row,
+.nearby-page[data-map-expanded="true"] .tasks-sheet { display: none; }
+
+.nearby-page[data-map-expanded="true"] .map-stage { margin: 0 12px; }
+
 /* Nearby sheet and task cards */
 .tasks-sheet {
   min-height: 510px;
@@ -1482,6 +1493,9 @@
 .mobile-app-viewport[data-platform="android"] .micro-shell { --micro-nav-safe: 0px; }
 
 .micro-shell > .tab-scene { bottom: var(--micro-nav-height); }
+/* The nav unmounts while the keyboard is up, so stop reserving its height —
+   otherwise the scene ends short and leaves a white band above the keyboard. */
+.micro-shell[data-keyboard="open"] > .tab-scene { bottom: 0; }
 
 .bottom-nav {
   position: absolute;

@@ -5,6 +5,8 @@ import {
   CalendarBlank,
   CaretDown,
   CaretLeft,
+  CornersIn,
+  CornersOut,
   ChatCircle,
   Check,
   CheckCircle,
@@ -715,6 +717,7 @@ function MicroShell() {
     <main
       className="micro-shell"
       data-testid="micro-app"
+      data-keyboard={isKeyboardVisible ? "open" : "closed"}
       aria-label="Micro neighborhood help prototype"
       aria-hidden={isRootActive ? undefined : true}
       inert={isRootActive ? undefined : true}
@@ -801,6 +804,12 @@ function NearbyScreen() {
   const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
+  const [mapExpanded, setMapExpanded] = useState(false);
+  // Percentage heights cannot resolve here: the runtime's scroll content is an
+  // auto-height grid. Measure the app shell (absolute, inset 0) instead so the
+  // expanded map fills whatever device and safe area it is on.
+  const mapStageRef = useRef<HTMLElement>(null);
+  const [expandedMapHeight, setExpandedMapHeight] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -837,6 +846,17 @@ function NearbyScreen() {
     : allTasks.filter((task) => visibleIds.has(task.id));
 
   useEffect(() => {
+    if (!mapExpanded) return;
+    const shell = mapStageRef.current?.closest(".micro-shell") as HTMLElement | null;
+    if (!shell) return;
+    const measure = () => setExpandedMapHeight(Math.max(0, shell.clientHeight - 62 - 96));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, [mapExpanded]);
+
+  useEffect(() => {
     if (primaryVisibleTask && selectedTaskId !== primaryVisibleTask.id) setSelectedTaskId(primaryVisibleTask.id);
   }, [primaryVisibleTask, selectedTaskId, setSelectedTaskId]);
 
@@ -849,7 +869,7 @@ function NearbyScreen() {
   return (
     <>
       <MobileScroll className="app-screen nearby-scroll">
-        <div className="nearby-page" data-sheet-snap={sheetSnap}>
+        <div className="nearby-page" data-sheet-snap={sheetSnap} data-map-expanded={mapExpanded ? "true" : "false"}>
           <header className="brand-row">
             <span className="wordmark">Micro</span>
             <button className="location-button" onClick={() => setLocationOpen(true)}>
@@ -874,9 +894,9 @@ function NearbyScreen() {
           </div>
 
           {/* The map owns its own drag gesture, so it opts out of parent scroll dragging. */}
-          <section className="map-stage" data-scroll-drag="ignore" data-fallback={!mapsApiKey || mapUnavailable ? "true" : "false"} aria-label={`Approximate task map for ${activeArea.label}`}>
+          <section className="map-stage" ref={mapStageRef} style={mapExpanded && expandedMapHeight ? { height: expandedMapHeight } : undefined} data-scroll-drag="ignore" data-fallback={!mapsApiKey || mapUnavailable ? "true" : "false"} aria-label={`Approximate task map for ${activeArea.label}`}>
             {mapsApiKey ? (
-              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={primaryVisibleTask?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} />
+              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={primaryVisibleTask?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
             ) : null}
             {!mapsApiKey || mapUnavailable ? <div className="map-placeholder" aria-hidden="true" /> : null}
             <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Map needs an API key" : mapUnavailable || "Approximate locations"}</div>
@@ -956,7 +976,7 @@ function taskAvatar(task: Task, profilePhotos: Record<Persona, string>) {
 
 const markerFullSizeZoom = 15;
 
-function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void }) {
+function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable, expanded, onToggleExpanded }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void; expanded: boolean; onToggleExpanded: () => void }) {
   const [zoom, setZoom] = useState(area.zoom);
   useEffect(() => setZoom(area.zoom), [area]);
   const markerSize = zoom >= markerFullSizeZoom ? "full" : zoom >= markerFullSizeZoom - 2 ? "regular" : "compact";
@@ -983,7 +1003,7 @@ function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable }: { are
       </GoogleMap>
       <MapAreaSync area={area} />
       <MapHealthCheck onUnavailable={onUnavailable} />
-      <MapZoomControls area={area} zoom={zoom} />
+      <MapZoomControls area={area} zoom={zoom} expanded={expanded} onToggleExpanded={onToggleExpanded} />
     </APIProvider>
   );
 }
@@ -1038,11 +1058,14 @@ function MapAreaSync({ area }: { area: MicroArea }) {
 }
 
 // Google's own controls are hidden so zoom matches the phone-frame styling.
-function MapZoomControls({ area, zoom }: { area: MicroArea; zoom: number }) {
+function MapZoomControls({ area, zoom, expanded, onToggleExpanded }: { area: MicroArea; zoom: number; expanded: boolean; onToggleExpanded: () => void }) {
   const map = useMap();
   const step = (delta: number) => map?.setZoom((map.getZoom() ?? area.zoom) + delta);
   return (
     <div className="map-zoom-controls" data-zoom={zoom}>
+      <button aria-label={expanded ? "Exit full screen map" : "Expand map to full screen"} aria-pressed={expanded} onClick={onToggleExpanded}>
+        {expanded ? <CornersIn size={17} weight="bold" aria-hidden="true" /> : <CornersOut size={17} weight="bold" aria-hidden="true" />}
+      </button>
       <button aria-label="Zoom in" disabled={zoom >= area.maxZoom} onClick={() => step(1)}><Plus size={17} weight="bold" aria-hidden="true" /></button>
       <button aria-label="Zoom out" disabled={zoom <= area.minZoom} onClick={() => step(-1)}><Minus size={17} weight="bold" aria-hidden="true" /></button>
     </div>
