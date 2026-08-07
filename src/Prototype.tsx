@@ -274,6 +274,8 @@ type Task = {
   listingPaused?: boolean;
   /** Requester-described rather than chosen from the reviewed catalog. */
   customPending?: boolean;
+  /** Set when the listing came from Supabase rather than local fixtures. */
+  ownerId?: string;
 };
 
 type PostDraft = {
@@ -595,6 +597,9 @@ type MicroContextValue = {
   postedTask: Task | null;
   setPostedTask: (task: Task | null) => void;
   ownedTasks: Task[];
+  remoteTasks: Task[];
+  remoteTasksError: string | null;
+  refreshRemoteTasks: () => Promise<void>;
   setOwnedTasks: Dispatch<SetStateAction<Task[]>>;
   postDraft: PostDraft;
   setPostDraft: Dispatch<SetStateAction<PostDraft>>;
@@ -1088,6 +1093,25 @@ function MicroProvider({ children }: { children: ReactNode }) {
   const [communityChecks, setCommunityChecks] = useState([false, false]);
   const [postedTask, setPostedTask] = useState<Task | null>(null);
   const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
+  // Listings other neighbors published. Empty in demo mode, where there is no
+  // account to attribute a post to and nothing to sync with.
+  const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
+  const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
+  const signedInUserId = auth.session?.user.id ?? null;
+
+  const refreshRemoteTasks = useCallback(async () => {
+    if (!supabase || !signedInUserId) { setRemoteTasks([]); setRemoteTasksError(null); return; }
+    const { data, error } = await supabase
+      .from("task_listings")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) { setRemoteTasksError(error.message); return; }
+    setRemoteTasksError(null);
+    setRemoteTasks((data ?? []).map((row) => taskFromRow(row as Record<string, unknown>)));
+  }, [signedInUserId]);
+
+  useEffect(() => { void refreshRemoteTasks(); }, [refreshRemoteTasks]);
   const [postDraft, setPostDraft] = useState<PostDraft>(initialPostDraft);
   const [acceptedTaskIds, setAcceptedTaskIds] = useState<string[]>([]);
   const [closedTaskIds, setClosedTaskIds] = useState<string[]>([]);
@@ -1183,6 +1207,9 @@ function MicroProvider({ children }: { children: ReactNode }) {
       setPostedTask,
       ownedTasks,
       setOwnedTasks,
+      remoteTasks,
+      remoteTasksError,
+      refreshRemoteTasks,
       postDraft,
       setPostDraft,
       acceptedTaskIds,
@@ -1242,7 +1269,7 @@ function MicroProvider({ children }: { children: ReactNode }) {
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
@@ -1929,7 +1956,7 @@ function BottomNav() {
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -1951,6 +1978,7 @@ function NearbyScreen() {
   const sheetDragHandled = useRef(false);
   const youthParticipationReady = persona !== "youth" || (youthAge >= 15 && guardianLinked && accessTermsAccepted);
   const allTasks = [
+    ...remoteTasks,
     ...ownedTasks,
     ...(sponsorFunded ? [sponsoredFixtureTask] : []),
     ...tasks,
@@ -2050,6 +2078,7 @@ function NearbyScreen() {
               onPointerCancel={() => { dragStartY.current = null; sheetDragHandled.current = false; }}
             ><span className="sheet-grabber" aria-hidden="true" /></button>
             <div className="tasks-heading-row"><h1 id="nearby-heading">Nearby tasks</h1><span>{visibleTasks.length} nearby</span></div>
+            {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
             {visibleTasks.length && primaryVisibleTask ? (
               <div className="task-list">
                 <TaskCard task={primaryVisibleTask} selected onOpen={openTask} />
@@ -2297,13 +2326,48 @@ function MapTaskPin({ task, active, size, onSelect }: { task: Task; active: bool
   );
 }
 
+/**
+ * A listing row carries a category id rather than an icon, because an icon is a
+ * React component and cannot be stored. The catalog is the source of truth for
+ * both the icon and the category label on the way back out.
+ */
+function taskFromRow(row: Record<string, unknown>): Task {
+  const categoryId = String(row.category_id ?? "");
+  const category = categoryById(categoryId);
+  const earning = row.earning === null || row.earning === undefined ? undefined : Number(row.earning);
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    title: String(row.title),
+    description: String(row.description),
+    mode: String(row.mode) as TaskMode,
+    earning,
+    coords: { lat: Number(row.lat), lng: Number(row.lng) },
+    areaId: String(row.area_id) as AreaId,
+    area: String(row.area),
+    time: String(row.time_label),
+    duration: String(row.duration),
+    icon: category?.icon ?? Wrench,
+    category: String(row.category),
+    included: String(row.included ?? ""),
+    excluded: String(row.excluded ?? ""),
+    completion: String(row.completion ?? ""),
+    requesterName: (row.requester_name as string) || "A neighbor",
+    requesterInitials: initialsFromName((row.requester_name as string) || "A neighbor"),
+    youthEligible: Boolean(row.youth_eligible),
+    listingPaused: Boolean(row.listing_paused),
+    customPending: Boolean(row.custom_pending) || undefined,
+  };
+}
+
 function TaskCard({ task, selected = false, unavailable = false, onOpen }: { task: Task; selected?: boolean; unavailable?: boolean; onOpen: (task: Task) => void }) {
   const ModeIcon = modeMeta[task.mode].icon;
   const TaskIcon = task.icon;
   const { persona } = useMicro();
+  const auth = useAuth();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
-  const isOwnedListing = task.ownerPersona === persona;
+  const isOwnedListing = task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona;
   return (
     <article className="task-card" data-selected={selected ? "true" : "false"} data-mode={task.mode} data-unavailable={unavailable ? "true" : "false"}>
       <div className="task-requester-row">
@@ -2374,7 +2438,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
   const hasOtherCommitment = acceptedTaskIds.some((id) => id !== task.id);
   const isSaved = savedTaskIds.includes(task.id);
   const listingReported = reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]);
-  const isOwnedListing = task.ownerPersona === persona;
+  const isOwnedListing = task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona;
   const youthBlocked = persona === "youth" && (!task.youthEligible || youthAge < 15 || !guardianLinked || !accessTermsAccepted);
   const needsApproval = persona === "youth" && task.youthEligible && youthApprovedTaskId !== task.id;
   const accountCanAccept = auth.demoMode || auth.capabilities.can_accept_tasks;
@@ -2505,11 +2569,13 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
 function PostScreen() {
   const keyboard = useKeyboard();
   const auth = useAuth();
-  const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileAreaId, profilePhotos, ownedTasks } = useMicro();
+  const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileAreaId, profilePhotos, ownedTasks, refreshRemoteTasks } = useMicro();
   const listingArea = areaById(profileAreaId);
   const profileArea = listingArea.label;
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [openCategoryId, setOpenCategoryId] = useState<string | null>(null);
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -2667,10 +2733,65 @@ function PostScreen() {
       youthEligible: template.youthEligible,
       customPending: template.isCustom || undefined,
     };
-    setPostedTask(created);
-    setOwnedTasks((current) => [created, ...current]);
-    setSelectedTaskId(created.id);
     keyboard.hide();
+    if (!supabase || auth.demoMode || !auth.session) {
+      // Demo mode has no account to attribute a listing to, so it stays local
+      // and is honest about that on the confirmation screen.
+      setPostedTask(created);
+      setOwnedTasks((current) => [created, ...current]);
+      setSelectedTaskId(created.id);
+      setPublished(true);
+      return;
+    }
+    void publishToSupabase(created);
+  };
+
+  const publishToSupabase = async (created: Task) => {
+    setPublishing(true);
+    setPublishError(null);
+    const { data, error } = await supabase!
+      .from("tasks")
+      .insert({
+        owner_id: auth.session!.user.id,
+        template_id: template.isCustom ? null : template.id,
+        custom_pending: Boolean(template.isCustom),
+        title: created.title,
+        description: created.description,
+        included: created.included ?? "",
+        excluded: created.excluded ?? "",
+        completion: created.completion ?? "",
+        category: created.category,
+        category_id: template.categoryId,
+        mode: created.mode,
+        earning: created.mode === "community" ? null : created.earning,
+        lat: created.coords.lat,
+        lng: created.coords.lng,
+        area_id: created.areaId,
+        area: created.area,
+        time_label: created.time,
+        duration: created.duration,
+        youth_eligible: created.youthEligible ?? false,
+      })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setPublishing(false);
+      setPublishError(error?.message ?? "The listing could not be saved.");
+      return;
+    }
+    // The address lives in its own owner-only table, so a failure here must not
+    // leave a listing standing with no way for the helper to be told where to go.
+    const stored = await supabase!.from("task_private_details").insert({ task_id: data.id, private_address: privateAddress.trim() });
+    if (stored.error) {
+      await supabase!.from("tasks").delete().eq("id", data.id);
+      setPublishing(false);
+      setPublishError(stored.error.message);
+      return;
+    }
+    await refreshRemoteTasks();
+    setPostedTask({ ...created, id: data.id as string, ownerId: auth.session!.user.id });
+    setSelectedTaskId(data.id as string);
+    setPublishing(false);
     setPublished(true);
   };
 
@@ -2703,7 +2824,7 @@ function PostScreen() {
             <p className="eyebrow">Ready for neighbors</p>
             <h1>Your task is posted.</h1>
             <p>It is visible around {profileArea} with an approximate public location.</p>
-            <div className="truth-card"><Info size={22} /><div><strong>Prototype only</strong><span>No payment, private address, or live notification was created.</span></div></div>
+            <div className="truth-card"><Info size={22} /><div><strong>{auth.demoMode || !auth.session ? "Local demo only" : "Saved for your neighbors"}</strong><span>{auth.demoMode || !auth.session ? "This listing lives in this browser session and no other neighbor can see it. Sign in to post for real." : "Neighbors signed in to Micro can see this listing. Your exact address stays private until a match. No payment or notification was created."}</span></div></div>
             <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} pending={template.isCustom} />
             <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { setPostDraft(initialPostDraft); setPublished(false); setStep(0); setOpenCategoryId(null); setCatalogQuery(""); }}>Post another task</button></div>
           </section>
@@ -2881,7 +3002,8 @@ function PostScreen() {
             {template.isCustom
               ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so it publishes marked for review. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
               : <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>}
-            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid} onClick={publish}>Publish task</button></div>
+            <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid || publishing} onClick={publish}>{publishing ? "Publishing…" : "Publish task"}</button></div>
+            {publishError ? <p className="form-error" role="alert">{publishError}</p> : null}
           </section>
         ) : null}
       </div>
