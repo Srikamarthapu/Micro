@@ -72,6 +72,34 @@ export function hasExpired(task: { startsAt?: Date }, now: Date): boolean {
   return Boolean(task.startsAt && task.startsAt.getTime() <= now.getTime());
 }
 
+/** How close a start has to be before a job you took on needs your attention. */
+export const arrivalWindowMinutes = 60;
+
+/** Whole minutes between now and a start; negative once it has begun. */
+export function minutesUntil(now: Date, start: Date): number {
+  return Math.round((start.getTime() - now.getTime()) / 60000);
+}
+
+/** "3 hr 10 min", the way a wait is spoken rather than counted. */
+function spanLabel(minutes: number): string {
+  if (minutes >= 1440) {
+    const days = Math.round(minutes / 1440);
+    return `${days} ${days === 1 ? "day" : "days"}`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${minutes} min`;
+  return rest ? `${hours} hr ${rest} min` : `${hours} hr`;
+}
+
+/** The countdown on an accepted job, from far out through already underway. */
+export function countdownLabel(now: Date, start: Date): string {
+  const minutes = minutesUntil(now, start);
+  if (minutes > 0) return `Starts in ${spanLabel(minutes)}`;
+  if (minutes === 0) return "Starting now";
+  return `Started ${spanLabel(-minutes)} ago`;
+}
+
 /** How that moment reads to whoever is browsing right now. */
 export function startLabel(now: Date, start: Date, slot: string): string {
   const from = new Date(now);

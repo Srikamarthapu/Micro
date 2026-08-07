@@ -16,20 +16,22 @@ import {
   CurrencyDollar,
   EnvelopeSimple,
   HandHeart,
-  House,
+  
   Info,
-  Leaf,
+  
   ListChecks,
   LockKey,
   MagnifyingGlass,
   MapPin,
   Minus,
+  NavigationArrow,
   NotePencil,
-  Package,
+  Prohibit,
+
   PaperPlaneTilt,
   Plus,
   SealCheck,
-  Scissors,
+  
   ShieldCheck,
   SignOut,
   SlidersHorizontal,
@@ -47,7 +49,7 @@ import "@fontsource-variable/atkinson-hyperlegible-next";
 import "@fontsource-variable/fraunces";
 import { AdvancedMarker, AdvancedMarkerAnchorPoint, APILoadingStatus, APIProvider, Circle, Map as GoogleMap, useApiLoadingStatus, useMap } from "@vis.gl/react-google-maps";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Component, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ErrorInfo, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   BottomSheet,
@@ -76,717 +78,19 @@ import {
   templateById,
   type TaskTemplate,
 } from "./taskCatalog";
-import { supabase, supabaseConfig } from "./supabase";
-import { areaById, areaIdFromServiceArea, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
-import { dateChoicesFor, hasExpired, slotsRemainingToday, startMoment, startTimeSlots } from "./micro/schedule";
-import { appendTaskEvent, emptyCapabilities, emptyTaskReview, type AccountType, type AuthActionResult, type AuthCapabilities, type AuthOrganization, type AuthProfile, type CommunityStage, type CompletionSubmission, type MessageItem, type OrganizationVerificationStatus, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type SignUpInput, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./micro/types";
+import { supabase } from "./supabase";
+import { areaById, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
+import { arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startMoment, startTimeSlots } from "./micro/schedule";
+import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
 import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
+import { AuthProvider, initialsFromName, useAuth, type AuthContextValue } from "./micro/AuthProvider";
+import { MicroProvider, useMicro } from "./micro/MicroProvider";
 
 
 
-type MicroContextValue = {
-  activeTab: TabId;
-  setActiveTab: (tab: TabId) => void;
-  selectedTaskId: string;
-  setSelectedTaskId: (id: string) => void;
-  paidStage: PaidStage;
-  setPaidStage: (stage: PaidStage) => void;
-  activeTask: Task;
-  setActiveTask: (task: Task) => void;
-  communityTask: Task | null;
-  setCommunityTask: (task: Task | null) => void;
-  communityStage: CommunityStage;
-  setCommunityStage: (stage: CommunityStage) => void;
-  communityChecks: boolean[];
-  setCommunityChecks: Dispatch<SetStateAction<boolean[]>>;
-  postedTask: Task | null;
-  setPostedTask: (task: Task | null) => void;
-  ownedTasks: Task[];
-  remoteTasks: Task[];
-  remoteTasksError: string | null;
-  refreshRemoteTasks: () => Promise<void>;
-  setOwnedTasks: Dispatch<SetStateAction<Task[]>>;
-  postDraft: PostDraft;
-  setPostDraft: Dispatch<SetStateAction<PostDraft>>;
-  acceptedTaskIds: string[];
-  setAcceptedTaskIds: Dispatch<SetStateAction<string[]>>;
-  closedTaskIds: string[];
-  setClosedTaskIds: Dispatch<SetStateAction<string[]>>;
-  acceptedTaskActors: Record<string, "adult" | "youth">;
-  setAcceptedTaskActors: Dispatch<SetStateAction<Record<string, "adult" | "youth">>>;
-  taskEvents: Record<string, TaskEvent[]>;
-  setTaskEvents: Dispatch<SetStateAction<Record<string, TaskEvent[]>>>;
-  activityPerspective: "helper" | "requester";
-  setActivityPerspective: (value: "helper" | "requester") => void;
-  savedTaskIds: string[];
-  setSavedTaskIds: Dispatch<SetStateAction<string[]>>;
-  sponsorFunded: boolean;
-  setSponsorFunded: (funded: boolean) => void;
-  sponsorSeeking: boolean;
-  setSponsorSeeking: (seeking: boolean) => void;
-  youthApprovedTaskId: string | null;
-  setYouthApprovedTaskId: (taskId: string | null) => void;
-  youthApprovalTaskId: string | null;
-  setYouthApprovalTaskId: (taskId: string | null) => void;
-  youthDeclinedTaskId: string | null;
-  setYouthDeclinedTaskId: (taskId: string | null) => void;
-  guardianSupervisedTaskId: string | null;
-  setGuardianSupervisedTaskId: (taskId: string | null) => void;
-  guardianSupervisionStatus: string;
-  setGuardianSupervisionStatus: (status: string) => void;
-  persona: Persona;
-  setPersona: (persona: Persona) => void;
-  accessTermsAccepted: boolean;
-  setAccessTermsAccepted: (accepted: boolean) => void;
-  guardianLinked: boolean;
-  setGuardianLinked: (linked: boolean) => void;
-  youthAge: 14 | 16;
-  setYouthAge: (age: 14 | 16) => void;
-  threadMessages: Record<string, MessageItem[]>;
-  setThreadMessages: Dispatch<SetStateAction<Record<string, MessageItem[]>>>;
-  blockedThreadIds: string[];
-  setBlockedThreadIds: Dispatch<SetStateAction<string[]>>;
-  blockedRequesterNames: string[];
-  setBlockedRequesterNames: Dispatch<SetStateAction<string[]>>;
-  reportedTaskIds: string[];
-  setReportedTaskIds: Dispatch<SetStateAction<string[]>>;
-  reportReasons: Record<string, string>;
-  setReportReasons: Dispatch<SetStateAction<Record<string, string>>>;
-  moderationHolds: Record<string, string>;
-  setModerationHolds: Dispatch<SetStateAction<Record<string, string>>>;
-  completionSubmissions: Record<string, CompletionSubmission>;
-  setCompletionSubmissions: Dispatch<SetStateAction<Record<string, CompletionSubmission>>>;
-  taskReviews: Record<string, TaskReviewState>;
-  setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
-  notificationsEnabled: boolean;
-  setNotificationsEnabled: (enabled: boolean) => void;
-  /** Special jobs already read in Notifications, so the bell stops pinging for them. */
-  seenSpecialJobIds: string[];
-  setSeenSpecialJobIds: Dispatch<SetStateAction<string[]>>;
-  profileAreaId: AreaId;
-  setProfileAreaId: (areaId: AreaId) => void;
-  profilePhotos: Record<Persona, string>;
-  setProfilePhotos: Dispatch<SetStateAction<Record<Persona, string>>>;
-};
 
-type AuthContextValue = {
-  configured: boolean;
-  initialized: boolean;
-  busy: boolean;
-  accountLoading: boolean;
-  accountError: string | null;
-  session: Session | null;
-  profile: AuthProfile | null;
-  organization: AuthOrganization | null;
-  accountType: AccountType;
-  capabilities: AuthCapabilities;
-  recoveryMode: boolean;
-  demoMode: boolean;
-  canSponsor: boolean;
-  signIn: (email: string, password: string) => Promise<AuthActionResult>;
-  signUp: (input: SignUpInput) => Promise<AuthActionResult>;
-  resendConfirmation: (email: string) => Promise<AuthActionResult>;
-  requestPasswordReset: (email: string) => Promise<AuthActionResult>;
-  updatePassword: (password: string) => Promise<AuthActionResult>;
-  createOrganization: (name: string, website?: string) => Promise<AuthActionResult>;
-  signOut: () => Promise<AuthActionResult>;
-  reloadProfile: () => Promise<void>;
-  enterDemo: () => void;
-  exitDemo: () => void;
-};
 
-const AuthContext = createContext<AuthContextValue | null>(null);
 
-function useAuth() {
-  const value = useContext(AuthContext);
-  if (!value) throw new Error("useAuth must be used inside AuthProvider");
-  return value;
-}
-
-function friendlyAuthError(error: unknown, fallback: string) {
-  const message = error && typeof error === "object" && "message" in error
-    ? String((error as { message?: unknown }).message ?? "").toLowerCase()
-    : "";
-
-  if (message.includes("invalid login credentials")) return "We couldn't sign you in. Check your email and password.";
-  if (message.includes("email not confirmed")) return "Confirm your email before signing in.";
-  if (message.includes("already registered") || message.includes("user already exists")) return "An account may already use that email. Try signing in or resetting the password.";
-  if (message.includes("weak password") || message.includes("password should")) return "Use at least 8 characters and avoid a commonly used password.";
-  if (message.includes("rate limit") || message.includes("too many requests")) return "Too many attempts. Wait a moment, then try again.";
-  if (message.includes("failed to fetch") || message.includes("network")) return "Micro couldn't reach Supabase. Check your connection and try again.";
-  return fallback;
-}
-
-function initialsFromName(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return "M";
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase() ?? "").join("") || "M";
-}
-
-function AuthProvider({ children }: { children: ReactNode }) {
-  const [initialized, setInitialized] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [accountLoading, setAccountLoading] = useState(false);
-  const [accountError, setAccountError] = useState<string | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [profile, setProfile] = useState<AuthProfile | null>(null);
-  const [organization, setOrganization] = useState<AuthOrganization | null>(null);
-  const [capabilities, setCapabilities] = useState<AuthCapabilities>(emptyCapabilities);
-  const [recoveryMode, setRecoveryMode] = useState(false);
-  const [demoMode, setDemoMode] = useState(false);
-  const hydrationRequestRef = useRef(0);
-  const authEventSequenceRef = useRef(0);
-  const activeUserIdRef = useRef<string | null>(null);
-
-  const hydrateAccount = useCallback(async (nextSession: Session | null) => {
-    const requestId = ++hydrationRequestRef.current;
-    const isCurrentRequest = () => hydrationRequestRef.current === requestId;
-
-    if (!supabase || !nextSession) {
-      setProfile(null);
-      setOrganization(null);
-      setCapabilities(emptyCapabilities());
-      setAccountError(null);
-      setAccountLoading(false);
-      return;
-    }
-
-    setAccountLoading(true);
-    setAccountError(null);
-    setProfile(null);
-    setOrganization(null);
-    setCapabilities(emptyCapabilities());
-
-    try {
-      const { data: profileData, error: profileError } = await supabase
-        .from("profiles")
-        .select("id, display_name, service_area, account_type")
-        .eq("id", nextSession.user.id)
-        .maybeSingle();
-
-      if (!isCurrentRequest()) return;
-      if (profileError || !profileData) {
-        setAccountError(
-          profileError
-            ? "Your account is signed in, but Micro couldn't load its protected profile. The database setup may still need to be applied."
-            : "Your account is signed in, but its Micro profile is not ready yet.",
-        );
-        return;
-      }
-
-      const nextProfile = profileData as AuthProfile;
-      setProfile(nextProfile);
-
-      const { data: membershipData, error: membershipError } = await supabase
-        .from("organization_members")
-        .select("member_role, organization:organizations(id, name, verification_status, sponsorship_enabled)")
-        .eq("user_id", nextSession.user.id)
-        .eq("membership_status", "active")
-        .maybeSingle();
-
-      if (!isCurrentRequest()) return;
-      if (membershipError) {
-        setAccountError("Your account loaded, but its organization membership could not be verified.");
-        return;
-      }
-
-      const membership = membershipData as {
-        member_role?: AuthOrganization["role"];
-        organization?: Omit<AuthOrganization, "role"> | Array<Omit<AuthOrganization, "role">> | null;
-      } | null;
-      const related = Array.isArray(membership?.organization)
-        ? membership?.organization[0]
-        : membership?.organization;
-
-      setOrganization(
-        related && membership?.member_role
-          ? { ...related, role: membership.member_role }
-          : null,
-      );
-
-      const { data: capabilityData, error: capabilityError } = await supabase
-        .rpc("current_user_capabilities")
-        .maybeSingle();
-
-      if (!isCurrentRequest()) return;
-      if (capabilityError || !capabilityData) {
-        setAccountError("Micro couldn't verify your task permissions. Try loading the account again.");
-        return;
-      }
-      setCapabilities(capabilityData as AuthCapabilities);
-    } catch (error) {
-      if (!isCurrentRequest()) return;
-      setProfile(null);
-      setOrganization(null);
-      setCapabilities(emptyCapabilities());
-      setAccountError(friendlyAuthError(error, "Micro couldn't load your protected account. Try again."));
-    } finally {
-      if (isCurrentRequest()) setAccountLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!supabase) {
-      setInitialized(true);
-      return;
-    }
-
-    let active = true;
-
-    const initialSequence = authEventSequenceRef.current;
-    void supabase.auth.getSession()
-      .then(({ data, error }) => {
-        if (!active || authEventSequenceRef.current !== initialSequence) return;
-        if (error) {
-          setAccountError("Micro couldn't restore your previous session.");
-          return;
-        }
-        activeUserIdRef.current = data.session?.user.id ?? null;
-        setSession(data.session);
-        return hydrateAccount(data.session);
-      })
-      .catch(() => {
-        if (active && authEventSequenceRef.current === initialSequence) setAccountError("Micro couldn't restore your previous session.");
-      })
-      .finally(() => {
-        if (active && authEventSequenceRef.current === initialSequence) setInitialized(true);
-      });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (!active) return;
-      authEventSequenceRef.current += 1;
-      const nextUserId = nextSession?.user.id ?? null;
-      const identityChanged = activeUserIdRef.current !== nextUserId;
-      activeUserIdRef.current = nextUserId;
-      setSession(nextSession);
-      setInitialized(true);
-      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
-      if (event === "SIGNED_OUT") {
-        setRecoveryMode(false);
-        setDemoMode(false);
-      }
-      if (identityChanged) {
-        hydrationRequestRef.current += 1;
-        setProfile(null);
-        setOrganization(null);
-        setCapabilities(emptyCapabilities());
-        setAccountError(null);
-        setAccountLoading(Boolean(nextSession));
-        window.setTimeout(() => {
-          if (active) void hydrateAccount(nextSession);
-        }, 0);
-      }
-    });
-
-    return () => {
-      active = false;
-      listener.subscription.unsubscribe();
-    };
-  }, [hydrateAccount]);
-
-  const requireClient = () => {
-    if (supabase) return null;
-    return {
-      ok: false,
-      message: "Micro is waiting for the project's publishable key. No secret key is required.",
-    } satisfies AuthActionResult;
-  };
-
-  const runBusyAction = async (
-    work: () => Promise<AuthActionResult>,
-    fallback: string,
-  ): Promise<AuthActionResult> => {
-    setBusy(true);
-    try {
-      return await work();
-    } catch (error) {
-      return { ok: false, message: friendlyAuthError(error, fallback) };
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const signIn = async (email: string, password: string): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { error } = await supabase!.auth.signInWithPassword({ email: email.trim(), password });
-      return error
-        ? { ok: false, message: friendlyAuthError(error, "We couldn't sign you in. Try again.") }
-        : { ok: true };
-    }, "We couldn't sign you in. Try again.");
-  };
-
-  const signUp = async (input: SignUpInput): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { data, error } = await supabase!.auth.signUp({
-        email: input.email.trim(),
-        password: input.password,
-        options: {
-          emailRedirectTo: window.location.origin,
-          data: {
-            display_name: input.fullName.trim(),
-            account_type: input.accountType,
-            service_area: input.approximateArea,
-            standards_accepted: input.standardsAccepted,
-            organization_name: input.organizationName?.trim() || null,
-            organization_website: input.organizationWebsite?.trim() || null,
-          },
-        },
-      });
-      if (error) return { ok: false, message: friendlyAuthError(error, "We couldn't create the account. Try again.") };
-      return { ok: true, confirmationRequired: !data.session };
-    }, "We couldn't create the account. Try again.");
-  };
-
-  const resendConfirmation = async (email: string): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { error } = await supabase!.auth.resend({
-        type: "signup",
-        email: email.trim(),
-        options: { emailRedirectTo: window.location.origin },
-      });
-      return error
-        ? { ok: false, message: friendlyAuthError(error, "We couldn't resend the confirmation email.") }
-        : { ok: true, message: "A new confirmation email is on its way." };
-    }, "We couldn't resend the confirmation email.");
-  };
-
-  const requestPasswordReset = async (email: string): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { error } = await supabase!.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin,
-      });
-      return error
-        ? { ok: false, message: friendlyAuthError(error, "We couldn't send the reset email. Try again.") }
-        : { ok: true, message: "If that email belongs to an account, a reset link is on its way." };
-    }, "We couldn't send the reset email. Try again.");
-  };
-
-  const updatePassword = async (password: string): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { error } = await supabase!.auth.updateUser({ password });
-      if (error) return { ok: false, message: friendlyAuthError(error, "We couldn't update the password.") };
-      setRecoveryMode(false);
-      return { ok: true, message: "Your password has been updated." };
-    }, "We couldn't update the password.");
-  };
-
-  const createOrganization = async (name: string, website?: string): Promise<AuthActionResult> => {
-    const missing = requireClient();
-    if (missing) return missing;
-    if (!session) return { ok: false, message: "Sign in again before creating the organization profile." };
-    const slugBase = name
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "micro-nonprofit";
-    const slug = `${slugBase}-${session.user.id.slice(0, 6)}`;
-    return runBusyAction(async () => {
-      const { error } = await supabase!
-        .from("organizations")
-        .insert({
-          name: name.trim(),
-          slug,
-          website_url: website?.trim() || null,
-        });
-      if (error) return { ok: false, message: "Micro couldn't create the organization profile. Check the name and try again." };
-      await hydrateAccount(session);
-      return { ok: true };
-    }, "Micro couldn't create the organization profile. Check the name and try again.");
-  };
-
-  const signOut = async (): Promise<AuthActionResult> => {
-    if (demoMode) {
-      setDemoMode(false);
-      return { ok: true };
-    }
-    const missing = requireClient();
-    if (missing) return missing;
-    return runBusyAction(async () => {
-      const { error } = await supabase!.auth.signOut();
-      if (error) return { ok: false, message: "Micro couldn't sign you out. Try again." };
-      setProfile(null);
-      setOrganization(null);
-      setCapabilities(emptyCapabilities());
-      return { ok: true };
-    }, "Micro couldn't sign you out. Try again.");
-  };
-
-  const reloadProfile = useCallback(async () => {
-    if (session) {
-      await hydrateAccount(session);
-      return;
-    }
-    if (!supabase) {
-      setAccountError("Micro is waiting for the project's publishable key.");
-      return;
-    }
-
-    const authSequence = authEventSequenceRef.current;
-    setAccountLoading(true);
-    setAccountError(null);
-    try {
-      const { data, error } = await supabase.auth.getSession();
-      if (authEventSequenceRef.current !== authSequence) return;
-      if (error) {
-        setAccountError("Micro couldn't restore your previous session.");
-        return;
-      }
-      activeUserIdRef.current = data.session?.user.id ?? null;
-      setSession(data.session);
-      setInitialized(true);
-      if (data.session) await hydrateAccount(data.session);
-    } catch {
-      if (authEventSequenceRef.current === authSequence) setAccountError("Micro couldn't restore your previous session.");
-    } finally {
-      if (authEventSequenceRef.current === authSequence) setAccountLoading(false);
-    }
-  }, [hydrateAccount, session]);
-
-  const value = useMemo<AuthContextValue>(() => ({
-    configured: supabaseConfig.configured,
-    initialized,
-    busy,
-    accountLoading,
-    accountError,
-    session,
-    profile,
-    organization,
-    accountType: (organization || profile?.account_type === "nonprofit") ? "nonprofit" : "regular",
-    capabilities,
-    recoveryMode,
-    demoMode,
-    canSponsor: capabilities.can_sponsor_tasks,
-    signIn,
-    signUp,
-    resendConfirmation,
-    requestPasswordReset,
-    updatePassword,
-    createOrganization,
-    signOut,
-    reloadProfile,
-    enterDemo: () => setDemoMode(true),
-    exitDemo: () => setDemoMode(false),
-  }), [accountError, accountLoading, busy, capabilities, demoMode, initialized, organization, profile, recoveryMode, reloadProfile, session]);
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-const MicroContext = createContext<MicroContextValue | null>(null);
-
-function useMicro() {
-  const value = useContext(MicroContext);
-  if (!value) throw new Error("useMicro must be used inside MicroProvider");
-  return value;
-}
-
-function MicroProvider({ children }: { children: ReactNode }) {
-  const auth = useAuth();
-  const [activeTab, setActiveTab] = useState<TabId>("nearby");
-  const [selectedTaskId, setSelectedTaskId] = useState("leaves");
-  const [paidStage, setPaidStage] = useState<PaidStage>("Payment secured");
-  const [activeTask, setActiveTask] = useState<Task>(tasks[0]);
-  const [communityTask, setCommunityTask] = useState<Task | null>(null);
-  const [communityStage, setCommunityStage] = useState<CommunityStage>("Committed");
-  const [communityChecks, setCommunityChecks] = useState([false, false]);
-  const [postedTask, setPostedTask] = useState<Task | null>(null);
-  const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
-  // Listings other neighbors published. Empty in demo mode, where there is no
-  // account to attribute a post to and nothing to sync with.
-  const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
-  const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
-  const signedInUserId = auth.session?.user.id ?? null;
-
-  const refreshRemoteTasks = useCallback(async () => {
-    if (!supabase || !signedInUserId) { setRemoteTasks([]); setRemoteTasksError(null); return; }
-    const { data, error } = await supabase
-      .from("task_listings")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(200);
-    if (error) { setRemoteTasksError(error.message); return; }
-    setRemoteTasksError(null);
-    setRemoteTasks((data ?? []).map((row) => taskFromRow(row as Record<string, unknown>)));
-  }, [signedInUserId]);
-
-  useEffect(() => { void refreshRemoteTasks(); }, [refreshRemoteTasks]);
-  const [postDraft, setPostDraft] = useState<PostDraft>(initialPostDraft);
-  const [acceptedTaskIds, setAcceptedTaskIds] = useState<string[]>([]);
-  const [closedTaskIds, setClosedTaskIds] = useState<string[]>([]);
-  const [acceptedTaskActors, setAcceptedTaskActors] = useState<Record<string, "adult" | "youth">>({});
-  const [taskEvents, setTaskEvents] = useState<Record<string, TaskEvent[]>>({});
-  const [activityPerspective, setActivityPerspective] = useState<"helper" | "requester">("helper");
-  const [savedTaskIds, setSavedTaskIds] = useState<string[]>(["hedge", "table"]);
-  const [sponsorFunded, setSponsorFunded] = useState(false);
-  const [sponsorSeeking, setSponsorSeeking] = useState(false);
-  const [youthApprovedTaskId, setYouthApprovedTaskId] = useState<string | null>(null);
-  const [youthApprovalTaskId, setYouthApprovalTaskId] = useState<string | null>(null);
-  const [youthDeclinedTaskId, setYouthDeclinedTaskId] = useState<string | null>(null);
-  const [guardianSupervisedTaskId, setGuardianSupervisedTaskId] = useState<string | null>(null);
-  const [guardianSupervisionStatus, setGuardianSupervisionStatus] = useState("");
-  const [persona, setPersonaState] = useState<Persona>("adult");
-  const [accessTermsByPersona, setAccessTermsByPersona] = useState<Record<Persona, boolean>>({ adult: true, youth: true, guardian: true });
-  const accessTermsAccepted = accessTermsByPersona[persona];
-  const setAccessTermsAccepted = (accepted: boolean) => setAccessTermsByPersona((current) => ({ ...current, [persona]: accepted }));
-  const [guardianLinked, setGuardianLinked] = useState(true);
-  const [youthAge, setYouthAge] = useState<14 | 16>(16);
-  const [threadMessages, setThreadMessages] = useState<Record<string, MessageItem[]>>({});
-  const [blockedThreadIds, setBlockedThreadIds] = useState<string[]>([]);
-  const [blockedRequesterNames, setBlockedRequesterNames] = useState<string[]>([]);
-  const [reportedTaskIds, setReportedTaskIds] = useState<string[]>([]);
-  const [reportReasons, setReportReasons] = useState<Record<string, string>>({});
-  const [moderationHolds, setModerationHolds] = useState<Record<string, string>>({});
-  const [completionSubmissions, setCompletionSubmissions] = useState<Record<string, CompletionSubmission>>({});
-  const [taskReviews, setTaskReviews] = useState<Record<string, TaskReviewState>>({});
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  // Deliberately outside the persona snapshots: "already read" is session UI
-  // state, not part of a seeded persona fixture.
-  const [seenSpecialJobIds, setSeenSpecialJobIds] = useState<string[]>([]);
-  const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
-  const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
-  const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
-    adult: {
-      selectedTaskId: "leaves", paidStage: "Payment secured", activeTask: tasks[0], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: ["hedge", "table"], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
-    },
-    youth: {
-      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
-    },
-    guardian: {
-      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "requester", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
-    },
-  });
-  const setPersona = (nextPersona: Persona) => {
-    if (nextPersona === persona) return;
-    personaSessionsRef.current[persona] = {
-      selectedTaskId, paidStage, activeTask, communityTask, communityStage, communityChecks, postedTask, postDraft, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, savedTaskIds, sponsorFunded, sponsorSeeking, threadMessages, blockedThreadIds, blockedRequesterNames, reportedTaskIds, reportReasons, completionSubmissions, taskReviews, notificationsEnabled, profileAreaId,
-    };
-    const next = personaSessionsRef.current[nextPersona];
-    setSelectedTaskId(next.selectedTaskId);
-    setPaidStage(next.paidStage);
-    setActiveTask(next.activeTask);
-    setCommunityTask(next.communityTask);
-    setCommunityStage(next.communityStage);
-    setCommunityChecks(next.communityChecks);
-    setPostedTask(next.postedTask);
-    setPostDraft(next.postDraft);
-    setAcceptedTaskIds(next.acceptedTaskIds);
-    setClosedTaskIds(next.closedTaskIds);
-    setAcceptedTaskActors(next.acceptedTaskActors);
-    setTaskEvents(next.taskEvents);
-    setActivityPerspective(next.activityPerspective);
-    setSavedTaskIds(next.savedTaskIds);
-    setSponsorFunded(next.sponsorFunded);
-    setSponsorSeeking(next.sponsorSeeking);
-    setThreadMessages(next.threadMessages);
-    setBlockedThreadIds(next.blockedThreadIds);
-    setBlockedRequesterNames(next.blockedRequesterNames);
-    setReportedTaskIds(next.reportedTaskIds);
-    setReportReasons(next.reportReasons);
-    setCompletionSubmissions(next.completionSubmissions);
-    setTaskReviews(next.taskReviews);
-    setNotificationsEnabled(next.notificationsEnabled);
-    setProfileAreaId(next.profileAreaId);
-    setPersonaState(nextPersona);
-  };
-  const value = useMemo(
-    () => ({
-      activeTab,
-      setActiveTab,
-      selectedTaskId,
-      setSelectedTaskId,
-      paidStage,
-      setPaidStage,
-      activeTask,
-      setActiveTask,
-      communityTask,
-      setCommunityTask,
-      communityStage,
-      setCommunityStage,
-      communityChecks,
-      setCommunityChecks,
-      postedTask,
-      setPostedTask,
-      ownedTasks,
-      setOwnedTasks,
-      remoteTasks,
-      remoteTasksError,
-      refreshRemoteTasks,
-      postDraft,
-      setPostDraft,
-      acceptedTaskIds,
-      setAcceptedTaskIds,
-      closedTaskIds,
-      setClosedTaskIds,
-      acceptedTaskActors,
-      setAcceptedTaskActors,
-      taskEvents,
-      setTaskEvents,
-      activityPerspective,
-      setActivityPerspective,
-      savedTaskIds,
-      setSavedTaskIds,
-      sponsorFunded,
-      setSponsorFunded,
-      sponsorSeeking,
-      setSponsorSeeking,
-      youthApprovedTaskId,
-      setYouthApprovedTaskId,
-      youthApprovalTaskId,
-      setYouthApprovalTaskId,
-      youthDeclinedTaskId,
-      setYouthDeclinedTaskId,
-      guardianSupervisedTaskId,
-      setGuardianSupervisedTaskId,
-      guardianSupervisionStatus,
-      setGuardianSupervisionStatus,
-      persona,
-      setPersona,
-      accessTermsAccepted,
-      setAccessTermsAccepted,
-      guardianLinked,
-      setGuardianLinked,
-      youthAge,
-      setYouthAge,
-      threadMessages,
-      setThreadMessages,
-      blockedThreadIds,
-      setBlockedThreadIds,
-      blockedRequesterNames,
-      setBlockedRequesterNames,
-      reportedTaskIds,
-      setReportedTaskIds,
-      reportReasons,
-      setReportReasons,
-      moderationHolds,
-      setModerationHolds,
-      completionSubmissions,
-      setCompletionSubmissions,
-      taskReviews,
-      setTaskReviews,
-      notificationsEnabled,
-      setNotificationsEnabled,
-      seenSpecialJobIds,
-      setSeenSpecialJobIds,
-      profileAreaId,
-      setProfileAreaId,
-      profilePhotos,
-      setProfilePhotos,
-    }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
-  );
-
-  return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
-}
 
 const rootScreen: FlowScreen = {
   id: "micro-home",
@@ -1471,12 +775,15 @@ function BottomNav() {
  * Jobs worth pinging a profile about: sponsored work, which is already funded
  * and pays the helper, plus youth-eligible tasks while Youth Mode is active.
  * Deliberately independent of the Nearby filters, so clearing or narrowing a
- * filter never silences the bell.
+ * filter never silences the bell. A refused job is out for good: the refusal
+ * lives here rather than at each call site so the bell and the notification
+ * list can never disagree about what is still worth showing.
  */
-function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId) {
+function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId, refusedJobIds: string[]) {
   const area = areaById(areaId);
   return pool.filter((task) =>
     task.ownerPersona !== persona &&
+    !refusedJobIds.includes(task.id) &&
     (areaId === "all" || task.areaId === areaId) &&
     distanceMiles(area.center, task.coords) <= 3 &&
     (task.mode === "sponsored" || (persona === "youth" && Boolean(task.youthEligible))));
@@ -1485,7 +792,7 @@ function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId) {
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
-  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
+  const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, refusedJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
   const [mapUnavailable, setMapUnavailable] = useState("");
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -1502,11 +809,11 @@ function NearbyScreen() {
   // until someone picks the specific kinds of work they want.
   const [categories, setCategories] = useState<string[]>([]);
   const [when, setWhen] = useState<"any" | "today" | "weekend">("any");
-  // Ticks so a listing leaves the list the minute its start passes, instead of
-  // waiting for the next navigation to notice.
+  // One clock for the screen: it retires listings whose start has passed and
+  // drives the countdown on a job you have taken on.
   const [browsedAt, setBrowsedAt] = useState(() => new Date());
   useEffect(() => {
-    const timer = window.setInterval(() => setBrowsedAt(new Date()), 60000);
+    const timer = window.setInterval(() => setBrowsedAt(new Date()), 15000);
     return () => window.clearInterval(timer);
   }, []);
   const [radius, setRadius] = useState<1 | 3>(3);
@@ -1540,12 +847,25 @@ function NearbyScreen() {
   const primaryVisibleTask = visibleTasks.find((task) => task.id === selected?.id) ?? visibleTasks[0];
   // The bell pings for jobs this profile has not read yet; opening
   // Notifications marks them read, so it goes quiet until a new one appears.
-  const unreadSpecialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId).filter((task) => !seenSpecialJobIds.includes(task.id)) : [];
+  const unreadSpecialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId, refusedJobIds).filter((task) => !seenSpecialJobIds.includes(task.id)) : [];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
   const activeFilterCount = Number(mode !== "all") + categories.length + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
-  const mapTasks = primaryVisibleTask
+  const browsingTasks = primaryVisibleTask
     ? [primaryVisibleTask, ...allTasks.filter((task) => visibleIds.has(task.id) && task.id !== primaryVisibleTask.id)]
     : allTasks.filter((task) => visibleIds.has(task.id));
+  // A job you have taken on is excluded from the browsing list, so it has to be
+  // put back on the map by hand — and it is the one pin that gets to be the real
+  // address rather than a privacy area, because the match already released it.
+  const mapTasks = activeCommitment ? [activeCommitment, ...browsingTasks] : browsingTasks;
+  const jobStage = activeCommitment ? jobStageFor(activeCommitment, browsedAt) : undefined;
+  const focusedTaskId = jobStage && jobStage !== "scheduled" ? activeCommitment?.id : primaryVisibleTask?.id;
+
+  // Once the start is inside the arrival window the job takes the screen: the
+  // sheet opens itself so the address and scope are there without a swipe. It
+  // fires on the change of stage, so a sheet you then close stays closed.
+  useEffect(() => {
+    if (jobStage === "soon" || jobStage === "now") setSheetSnap("expanded");
+  }, [jobStage]);
 
   useEffect(() => {
     if (!mapExpanded) return;
@@ -1601,7 +921,7 @@ function NearbyScreen() {
           {/* The map owns its own drag gesture, so it opts out of parent scroll dragging. */}
           <section className="map-stage" ref={mapStageRef} style={mapExpanded && expandedMapHeight ? { height: expandedMapHeight } : undefined} data-scroll-drag="ignore" data-fallback={!mapsApiKey || mapUnavailable ? "true" : "false"} aria-label={`Approximate task map for ${activeArea.label}`}>
             {mapsApiKey ? (
-              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={primaryVisibleTask?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
+              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={focusedTaskId} exactTaskId={activeCommitment?.id} onSelect={setSelectedTaskId} onUnavailable={setMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
             ) : null}
             {!mapsApiKey || mapUnavailable ? <div className="map-placeholder" aria-hidden="true" /> : null}
             <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Preview map needs an API key" : mapUnavailable || `Preview map · approximate ${privacyRadiusMi} mi area`}</div>
@@ -1626,14 +946,7 @@ function NearbyScreen() {
               }}
               onPointerCancel={() => { dragStartY.current = null; sheetDragHandled.current = false; }}
             ><span className="sheet-grabber" aria-hidden="true" /></button>
-            {activeCommitment ? (
-              <article className="active-commitment">
-                <p className="active-commitment-label"><span className="live-dot" aria-hidden="true" /> Your active job</p>
-                <h2>{activeCommitment.title}</h2>
-                <p className="active-commitment-meta">{activeCommitment.time} · {activeCommitment.earning ? `$${activeCommitment.earning}` : "Volunteer"}</p>
-                <button className="primary-button" onClick={() => setActiveTab("activity")}>Open job <ArrowRight size={18} /></button>
-              </article>
-            ) : null}
+            {activeCommitment ? <ActiveJobPanel task={activeCommitment} now={browsedAt} /> : null}
             <div className="tasks-heading-row"><h1 id="nearby-heading">{activeCommitment ? "Other tasks nearby" : "Nearby tasks"}</h1><span>{visibleTasks.length} nearby</span></div>
             {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
             {visibleTasks.length && primaryVisibleTask ? (
@@ -1709,7 +1022,7 @@ function approximateCoords(task: Task): LatLng {
   };
 }
 
-function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable, expanded, onToggleExpanded }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void; expanded: boolean; onToggleExpanded: () => void }) {
+function NearbyMap({ area, tasks, activeTaskId, exactTaskId, onSelect, onUnavailable, expanded, onToggleExpanded }: { area: MicroArea; tasks: Task[]; activeTaskId?: string; exactTaskId?: string; onSelect: (id: string) => void; onUnavailable: (reason: string) => void; expanded: boolean; onToggleExpanded: () => void }) {
   const [zoom, setZoom] = useState(area.zoom);
   useEffect(() => setZoom(area.zoom), [area]);
   const markerSize = zoom >= markerFullSizeZoom ? "full" : zoom >= markerFullSizeZoom - 2 ? "regular" : "compact";
@@ -1731,11 +1044,13 @@ function NearbyMap({ area, tasks, activeTaskId, onSelect, onUnavailable, expande
           reuseMaps
           onZoomChanged={(event) => setZoom(event.detail.zoom)}
         >
-          {tasks.map((task) => (
+          {/* The matched job has no privacy area to draw: its exact spot is
+              already known to whoever accepted it. */}
+          {tasks.filter((task) => task.id !== exactTaskId).map((task) => (
             <TaskAreaCircle key={`area-${task.id}`} task={task} active={activeTaskId === task.id} />
           ))}
           {tasks.map((task) => (
-            <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} size={markerSize} onSelect={onSelect} />
+            <MapTaskPin key={task.id} task={task} active={activeTaskId === task.id} exact={task.id === exactTaskId} size={markerSize} onSelect={onSelect} />
           ))}
         </GoogleMap>
       </MapRenderBoundary>
@@ -1858,14 +1173,14 @@ function TaskAreaCircle({ task, active }: { task: Task; active: boolean }) {
   );
 }
 
-function MapTaskPin({ task, active, size, onSelect }: { task: Task; active: boolean; size: "compact" | "regular" | "full"; onSelect: (id: string) => void }) {
+function MapTaskPin({ task, active, exact = false, size, onSelect }: { task: Task; active: boolean; exact?: boolean; size: "compact" | "regular" | "full"; onSelect: (id: string) => void }) {
   const { profilePhotos } = useMicro();
   const detail = getTaskDetails(task);
   const labelValue = task.earning ? `$${task.earning}` : "Volunteer";
   return (
     <AdvancedMarker
-      position={approximateCoords(task)}
-      zIndex={active ? 7 : 3}
+      position={exact ? task.coords : approximateCoords(task)}
+      zIndex={exact ? 9 : active ? 7 : 3}
       anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
       title={`${detail.requester}: ${task.title}`}
       onClick={() => onSelect(task.id)}
@@ -1875,48 +1190,83 @@ function MapTaskPin({ task, active, size, onSelect }: { task: Task; active: bool
         data-mode={task.mode}
         data-size={size}
         data-active={active ? "true" : "false"}
+        data-exact={exact ? "true" : "false"}
         role="button"
-        aria-label={`${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
+        aria-label={exact ? `${detail.requester}: ${task.title}, your accepted job at ${detail.address}` : `${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
       >
         <span className="map-avatar-bubble"><PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} size={active ? "pin-active" : "pin"} label={`${detail.requester} profile photo`} /><span className="map-mode-dot" aria-hidden="true" /></span>
-        {active ? <span className="map-pin-label"><strong>{detail.requester.split(" ")[0]}</strong><small>{labelValue}</small></span> : null}
+        {active || exact ? <span className="map-pin-label"><strong>{exact ? "Your job" : detail.requester.split(" ")[0]}</strong><small>{labelValue}</small></span> : null}
       </span>
     </AdvancedMarker>
   );
 }
 
+type JobStage = "scheduled" | "soon" | "now";
+
 /**
- * A listing row carries a category id rather than an icon, because an icon is a
- * React component and cannot be stored. The catalog is the source of truth for
- * both the icon and the category label on the way back out.
+ * How much of your attention an accepted job has earned: booked for later, close
+ * enough that you should be heading over, or already underway. A job with no
+ * resolvable start never escalates, since there is no moment to count down to.
  */
-function taskFromRow(row: Record<string, unknown>): Task {
-  const categoryId = String(row.category_id ?? "");
-  const category = categoryById(categoryId);
-  const earning = row.earning === null || row.earning === undefined ? undefined : Number(row.earning);
-  return {
-    id: String(row.id),
-    ownerId: String(row.owner_id),
-    title: String(row.title),
-    description: String(row.description),
-    mode: String(row.mode) as TaskMode,
-    earning,
-    coords: { lat: Number(row.lat), lng: Number(row.lng) },
-    areaId: String(row.area_id) as AreaId,
-    area: String(row.area),
-    time: String(row.time_label),
-    duration: String(row.duration),
-    icon: category?.icon ?? Wrench,
-    category: String(row.category),
-    included: String(row.included ?? ""),
-    excluded: String(row.excluded ?? ""),
-    completion: String(row.completion ?? ""),
-    requesterName: (row.requester_name as string) || "A neighbor",
-    requesterInitials: initialsFromName((row.requester_name as string) || "A neighbor"),
-    youthEligible: Boolean(row.youth_eligible),
-    listingPaused: Boolean(row.listing_paused),
-    customPending: Boolean(row.custom_pending) || undefined,
-  };
+function jobStageFor(task: Task, now: Date): JobStage {
+  if (!task.startsAt) return "scheduled";
+  const minutes = minutesUntil(now, task.startsAt);
+  if (minutes <= 0) return "now";
+  return minutes <= arrivalWindowMinutes ? "soon" : "scheduled";
+}
+
+/**
+ * The job you have taken on, pinned above everything else in Nearby. It stays a
+ * quiet strip until the start comes within the arrival window, then opens into
+ * everything you need to actually turn up: a live countdown, the address the
+ * match released, directions out to a maps app, and the scope you agreed to —
+ * so nothing about arriving requires digging through another tab.
+ */
+function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
+  const { setActiveTab, setSelectedTaskId, profilePhotos } = useMicro();
+  const distanceLabel = useTaskDistanceLabel();
+  const detail = getTaskDetails(task);
+  const stage = jobStageFor(task, now);
+  const openJob = () => { setSelectedTaskId(task.id); setActiveTab("activity"); };
+  return (
+    <article className="active-job" data-stage={stage}>
+      <header className="active-job-head">
+        <p className="active-job-label"><span className="live-dot" aria-hidden="true" /> {stage === "now" ? "Job underway" : stage === "soon" ? "Job coming up" : "Your active job"}</p>
+        <p className="active-job-countdown" role={stage === "scheduled" ? undefined : "status"}>{task.startsAt ? countdownLabel(now, task.startsAt) : task.time}</p>
+      </header>
+      <h2>{task.title}</h2>
+      <p className="active-job-meta">{task.time} · {task.duration} · {task.earning ? `$${task.earning} you earn` : "Volunteer"}</p>
+
+      {stage === "scheduled" ? (
+        <button className="primary-button" onClick={openJob}>Open job <ArrowRight size={18} /></button>
+      ) : (
+        <>
+          <div className="active-job-person">
+            <PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} label={`${detail.requester} profile photo`} />
+            <span><strong>{detail.requester}</strong><small>{detail.trust}</small></span>
+            <button className="active-job-message" aria-label={`Message ${detail.requester}`} onClick={() => setActiveTab("messages")}><ChatCircle size={20} weight="fill" aria-hidden="true" /></button>
+          </div>
+
+          {/* The exact address exists only after the match, so this is the first
+              surface allowed to show it — and the only one that can route to it. */}
+          <a className="active-job-address" href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(detail.address)}`} target="_blank" rel="noreferrer">
+            <span className="active-job-address-icon"><MapPin size={20} weight="fill" aria-hidden="true" /></span>
+            <span><strong>{detail.address}</strong><small>{task.area} · {distanceLabel(task)} away · released for this match</small></span>
+            <span className="active-job-directions"><NavigationArrow size={17} weight="fill" aria-hidden="true" /> Directions</span>
+          </a>
+
+          <div className="active-job-scope">
+            <p className="mini-label">What you agreed to do</p>
+            <ul>{detail.included.map((item) => <li key={item}><Check size={14} weight="bold" aria-hidden="true" />{item}</li>)}</ul>
+            <p className="active-job-excluded"><Prohibit size={14} weight="bold" aria-hidden="true" />{detail.excluded}</p>
+            {task.completion ? <p className="active-job-done"><SealCheck size={14} weight="fill" aria-hidden="true" />Done when: {task.completion}</p> : null}
+          </div>
+
+          <button className="primary-button" onClick={openJob}>{stage === "now" ? "Open job and check in" : "Open job"} <ArrowRight size={18} /></button>
+        </>
+      )}
+    </article>
+  );
 }
 
 function TaskCard({ task, selected = false, unavailable = false, blockedReason, onOpen }: { task: Task; selected?: boolean; unavailable?: boolean; blockedReason?: string; onOpen: (task: Task) => void }) {
@@ -1988,7 +1338,7 @@ function makeTaskScreen(task: Task): FlowScreen {
 
 function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) {
   const auth = useAuth();
-  const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds } = useMicro();
+  const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds, refusedJobIds, setRefusedJobIds } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const [phase, setPhase] = useState<"detail" | "review" | "approval" | "accepted">("detail");
   const TaskIcon = task.icon;
@@ -1998,6 +1348,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
   const hasOtherCommitment = acceptedTaskIds.some((id) => id !== task.id);
   const isSaved = savedTaskIds.includes(task.id);
   const listingReported = reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]);
+  const isRefused = refusedJobIds.includes(task.id);
   const isOwnedListing = task.ownerId ? task.ownerId === auth.session?.user.id : task.ownerPersona === persona;
   const youthBlocked = persona === "youth" && (!task.youthEligible || youthAge < 15 || !guardianLinked || !accessTermsAccepted);
   const needsApproval = persona === "youth" && task.youthEligible && youthApprovedTaskId !== task.id;
@@ -2111,6 +1462,9 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
               {task.mode !== "community" && task.earning ? <section className="detail-pay-card"><div><span>Helper receives</span><strong>${task.earning}</strong></div><div><span>Hourly equivalent</span><strong>~${Math.round((task.earning * 60) / Number(task.duration.match(/\d+/)?.[0] || 60))}/hr</strong></div><div><span>Funder total</span><strong>${task.earning + Math.max(2, Math.round(task.earning * 0.05)) + Math.max(1, Math.round(task.earning * 0.03))}</strong></div><p><ShieldCheck size={17} weight="fill" /> Payment secured only after a confirmed match; helper earnings are not reduced.</p></section> : null}
               <div className="detail-secondary-actions"><button className="secondary-button" aria-pressed={isSaved} onClick={() => setSavedTaskIds((current) => isSaved ? current.filter((id) => id !== task.id) : [...current, task.id])}><Tag size={18} weight={isSaved ? "fill" : "regular"} /> {isSaved ? "Saved" : "Save task"}</button><button className="secondary-button danger-copy" disabled={listingReported} onClick={() => { const reason = "Standard priority · listing scope or safety concern · no evidence attached"; setReportedTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]); setReportReasons((current) => ({ ...current, [task.id]: reason })); setModerationHolds((current) => ({ ...current, [task.id]: "Task actions are paused for support review." })); appendTaskEvent(setTaskEvents, task.id, "Listing report recorded; matching paused for support review."); }}><Warning size={18} /> {listingReported ? "In support review" : "Report listing"}</button></div>
               {listingReported ? <div className="status-receipt" role="status"><CheckCircle size={18} weight="fill" /> Listing review recorded locally. Matching is paused pending support-authority review.</div> : null}
+              {/* Refusing is about notifications, not moderation: no report is filed
+                  and the listing stays browsable in Nearby. */}
+              {isOwnedListing ? null : <button className="quiet-action detail-refuse-action" aria-pressed={isRefused} onClick={() => { if (isRefused) { setRefusedJobIds((current) => current.filter((id) => id !== task.id)); return; } setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]); onDone(); }}>{isRefused ? <><Bell size={18} /> Notify me about this job again</> : <><X size={18} /> Refuse this job · stop notifying me</>}</button>}
               <div className="privacy-note"><Info size={19} /><span><strong>Approximate by design.</strong> Neighbours see a {privacyRadiusMi}-mile area, not a pin on your door. The exact address is shared only after a protected match.</span></div>
             </>
           )}
@@ -2735,7 +2089,7 @@ function makeNotificationsScreen(): FlowScreen {
 function NotificationsScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, remoteTasks, blockedThreadIds, blockedRequesterNames, profileAreaId, setSelectedTaskId, setSeenSpecialJobIds } = useMicro();
+  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, remoteTasks, blockedThreadIds, blockedRequesterNames, profileAreaId, refusedJobIds, setSelectedTaskId, setSeenSpecialJobIds } = useMicro();
   const openTab = (tab: TabId) => { setActiveTab(tab); flow.pop(); };
   // A job notice opens that job, not just the tab it lives on.
   const openJob = (task: Task) => { setSelectedTaskId(task.id); setActiveTab("nearby"); flow.replace(makeTaskScreen(task)); };
@@ -2764,7 +2118,7 @@ function NotificationsScreen() {
   }
   // The Nearby bell counts these, so the list has to name the same jobs: same
   // pool, same exclusions, or the badge would promise a notice that isn't here.
-  const specialJobs = specialJobsFor([...remoteTasks, ...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId)
+  const specialJobs = specialJobsFor([...remoteTasks, ...ownedTasks, ...(sponsorFunded ? [sponsoredFixtureTask] : []), ...tasks], persona, profileAreaId, refusedJobIds)
     .filter((task) => !hasExpired(task, new Date()) && !acceptedTaskIds.includes(task.id) && !closedTaskIds.includes(task.id) && !task.listingPaused && !moderationHolds[task.id] && !blockedThreadIds.includes(task.id) && !blockedRequesterNames.includes(getTaskDetails(task).requester));
   for (const task of [...specialJobs].reverse()) {
     notices.unshift({

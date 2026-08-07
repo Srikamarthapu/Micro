@@ -1,0 +1,344 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { Wrench } from "@phosphor-icons/react";
+import { supabase } from "../supabase";
+import { categoryById } from "../taskCatalog";
+import { initialsFromName, useAuth } from "./AuthProvider";
+import { areaIdFromServiceArea, type AreaId } from "./geo";
+import { initialPostDraft, tasks } from "./fixtures";
+import { type CommunityStage, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./types";
+
+/**
+ * All app state that is not authentication: the selected task, lifecycle
+ * stages, drafts, personas, and the listings loaded from Supabase.
+ */
+
+export type MicroContextValue = {
+  activeTab: TabId;
+  setActiveTab: (tab: TabId) => void;
+  selectedTaskId: string;
+  setSelectedTaskId: (id: string) => void;
+  paidStage: PaidStage;
+  setPaidStage: (stage: PaidStage) => void;
+  activeTask: Task;
+  setActiveTask: (task: Task) => void;
+  communityTask: Task | null;
+  setCommunityTask: (task: Task | null) => void;
+  communityStage: CommunityStage;
+  setCommunityStage: (stage: CommunityStage) => void;
+  communityChecks: boolean[];
+  setCommunityChecks: Dispatch<SetStateAction<boolean[]>>;
+  postedTask: Task | null;
+  setPostedTask: (task: Task | null) => void;
+  ownedTasks: Task[];
+  remoteTasks: Task[];
+  remoteTasksError: string | null;
+  refreshRemoteTasks: () => Promise<void>;
+  setOwnedTasks: Dispatch<SetStateAction<Task[]>>;
+  postDraft: PostDraft;
+  setPostDraft: Dispatch<SetStateAction<PostDraft>>;
+  acceptedTaskIds: string[];
+  setAcceptedTaskIds: Dispatch<SetStateAction<string[]>>;
+  closedTaskIds: string[];
+  setClosedTaskIds: Dispatch<SetStateAction<string[]>>;
+  acceptedTaskActors: Record<string, "adult" | "youth">;
+  setAcceptedTaskActors: Dispatch<SetStateAction<Record<string, "adult" | "youth">>>;
+  taskEvents: Record<string, TaskEvent[]>;
+  setTaskEvents: Dispatch<SetStateAction<Record<string, TaskEvent[]>>>;
+  activityPerspective: "helper" | "requester";
+  setActivityPerspective: (value: "helper" | "requester") => void;
+  savedTaskIds: string[];
+  setSavedTaskIds: Dispatch<SetStateAction<string[]>>;
+  sponsorFunded: boolean;
+  setSponsorFunded: (funded: boolean) => void;
+  sponsorSeeking: boolean;
+  setSponsorSeeking: (seeking: boolean) => void;
+  youthApprovedTaskId: string | null;
+  setYouthApprovedTaskId: (taskId: string | null) => void;
+  youthApprovalTaskId: string | null;
+  setYouthApprovalTaskId: (taskId: string | null) => void;
+  youthDeclinedTaskId: string | null;
+  setYouthDeclinedTaskId: (taskId: string | null) => void;
+  guardianSupervisedTaskId: string | null;
+  setGuardianSupervisedTaskId: (taskId: string | null) => void;
+  guardianSupervisionStatus: string;
+  setGuardianSupervisionStatus: (status: string) => void;
+  persona: Persona;
+  setPersona: (persona: Persona) => void;
+  accessTermsAccepted: boolean;
+  setAccessTermsAccepted: (accepted: boolean) => void;
+  guardianLinked: boolean;
+  setGuardianLinked: (linked: boolean) => void;
+  youthAge: 14 | 16;
+  setYouthAge: (age: 14 | 16) => void;
+  threadMessages: Record<string, MessageItem[]>;
+  setThreadMessages: Dispatch<SetStateAction<Record<string, MessageItem[]>>>;
+  blockedThreadIds: string[];
+  setBlockedThreadIds: Dispatch<SetStateAction<string[]>>;
+  blockedRequesterNames: string[];
+  setBlockedRequesterNames: Dispatch<SetStateAction<string[]>>;
+  reportedTaskIds: string[];
+  setReportedTaskIds: Dispatch<SetStateAction<string[]>>;
+  reportReasons: Record<string, string>;
+  setReportReasons: Dispatch<SetStateAction<Record<string, string>>>;
+  moderationHolds: Record<string, string>;
+  setModerationHolds: Dispatch<SetStateAction<Record<string, string>>>;
+  completionSubmissions: Record<string, CompletionSubmission>;
+  setCompletionSubmissions: Dispatch<SetStateAction<Record<string, CompletionSubmission>>>;
+  taskReviews: Record<string, TaskReviewState>;
+  setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
+  notificationsEnabled: boolean;
+  setNotificationsEnabled: (enabled: boolean) => void;
+  /** Special jobs already read in Notifications, so the bell stops pinging for them. */
+  seenSpecialJobIds: string[];
+  setSeenSpecialJobIds: Dispatch<SetStateAction<string[]>>;
+  /** Jobs refused from task details; they stop generating notices entirely. */
+  refusedJobIds: string[];
+  setRefusedJobIds: Dispatch<SetStateAction<string[]>>;
+  profileAreaId: AreaId;
+  setProfileAreaId: (areaId: AreaId) => void;
+  profilePhotos: Record<Persona, string>;
+  setProfilePhotos: Dispatch<SetStateAction<Record<Persona, string>>>;
+};
+
+const MicroContext = createContext<MicroContextValue | null>(null);
+
+export function useMicro() {
+  const value = useContext(MicroContext);
+  if (!value) throw new Error("useMicro must be used inside MicroProvider");
+  return value;
+}
+
+export function MicroProvider({ children }: { children: ReactNode }) {
+  const auth = useAuth();
+  const [activeTab, setActiveTab] = useState<TabId>("nearby");
+  const [selectedTaskId, setSelectedTaskId] = useState("leaves");
+  const [paidStage, setPaidStage] = useState<PaidStage>("Payment secured");
+  const [activeTask, setActiveTask] = useState<Task>(tasks[0]);
+  const [communityTask, setCommunityTask] = useState<Task | null>(null);
+  const [communityStage, setCommunityStage] = useState<CommunityStage>("Committed");
+  const [communityChecks, setCommunityChecks] = useState([false, false]);
+  const [postedTask, setPostedTask] = useState<Task | null>(null);
+  const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
+  // Listings other neighbors published. Empty in demo mode, where there is no
+  // account to attribute a post to and nothing to sync with.
+  const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
+  const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
+  const signedInUserId = auth.session?.user.id ?? null;
+
+  const refreshRemoteTasks = useCallback(async () => {
+    if (!supabase || !signedInUserId) { setRemoteTasks([]); setRemoteTasksError(null); return; }
+    const { data, error } = await supabase
+      .from("task_listings")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) { setRemoteTasksError(error.message); return; }
+    setRemoteTasksError(null);
+    setRemoteTasks((data ?? []).map((row) => taskFromRow(row as Record<string, unknown>)));
+  }, [signedInUserId]);
+
+  useEffect(() => { void refreshRemoteTasks(); }, [refreshRemoteTasks]);
+  const [postDraft, setPostDraft] = useState<PostDraft>(initialPostDraft);
+  const [acceptedTaskIds, setAcceptedTaskIds] = useState<string[]>([]);
+  const [closedTaskIds, setClosedTaskIds] = useState<string[]>([]);
+  const [acceptedTaskActors, setAcceptedTaskActors] = useState<Record<string, "adult" | "youth">>({});
+  const [taskEvents, setTaskEvents] = useState<Record<string, TaskEvent[]>>({});
+  const [activityPerspective, setActivityPerspective] = useState<"helper" | "requester">("helper");
+  const [savedTaskIds, setSavedTaskIds] = useState<string[]>(["hedge", "table"]);
+  const [sponsorFunded, setSponsorFunded] = useState(false);
+  const [sponsorSeeking, setSponsorSeeking] = useState(false);
+  const [youthApprovedTaskId, setYouthApprovedTaskId] = useState<string | null>(null);
+  const [youthApprovalTaskId, setYouthApprovalTaskId] = useState<string | null>(null);
+  const [youthDeclinedTaskId, setYouthDeclinedTaskId] = useState<string | null>(null);
+  const [guardianSupervisedTaskId, setGuardianSupervisedTaskId] = useState<string | null>(null);
+  const [guardianSupervisionStatus, setGuardianSupervisionStatus] = useState("");
+  const [persona, setPersonaState] = useState<Persona>("adult");
+  const [accessTermsByPersona, setAccessTermsByPersona] = useState<Record<Persona, boolean>>({ adult: true, youth: true, guardian: true });
+  const accessTermsAccepted = accessTermsByPersona[persona];
+  const setAccessTermsAccepted = (accepted: boolean) => setAccessTermsByPersona((current) => ({ ...current, [persona]: accepted }));
+  const [guardianLinked, setGuardianLinked] = useState(true);
+  const [youthAge, setYouthAge] = useState<14 | 16>(16);
+  const [threadMessages, setThreadMessages] = useState<Record<string, MessageItem[]>>({});
+  const [blockedThreadIds, setBlockedThreadIds] = useState<string[]>([]);
+  const [blockedRequesterNames, setBlockedRequesterNames] = useState<string[]>([]);
+  const [reportedTaskIds, setReportedTaskIds] = useState<string[]>([]);
+  const [reportReasons, setReportReasons] = useState<Record<string, string>>({});
+  const [moderationHolds, setModerationHolds] = useState<Record<string, string>>({});
+  const [completionSubmissions, setCompletionSubmissions] = useState<Record<string, CompletionSubmission>>({});
+  const [taskReviews, setTaskReviews] = useState<Record<string, TaskReviewState>>({});
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  // Deliberately outside the persona snapshots: "already read" is session UI
+  // state, not part of a seeded persona fixture.
+  const [seenSpecialJobIds, setSeenSpecialJobIds] = useState<string[]>([]);
+  const [refusedJobIds, setRefusedJobIds] = useState<string[]>([]);
+  const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
+  const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
+  const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
+    adult: {
+      selectedTaskId: "leaves", paidStage: "Payment secured", activeTask: tasks[0], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: ["hedge", "table"], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
+    },
+    youth: {
+      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
+    },
+    guardian: {
+      selectedTaskId: "pantry", paidStage: "Payment secured", activeTask: tasks[3], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "requester", savedTaskIds: [], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
+    },
+  });
+  const setPersona = (nextPersona: Persona) => {
+    if (nextPersona === persona) return;
+    personaSessionsRef.current[persona] = {
+      selectedTaskId, paidStage, activeTask, communityTask, communityStage, communityChecks, postedTask, postDraft, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, activityPerspective, savedTaskIds, sponsorFunded, sponsorSeeking, threadMessages, blockedThreadIds, blockedRequesterNames, reportedTaskIds, reportReasons, completionSubmissions, taskReviews, notificationsEnabled, profileAreaId,
+    };
+    const next = personaSessionsRef.current[nextPersona];
+    setSelectedTaskId(next.selectedTaskId);
+    setPaidStage(next.paidStage);
+    setActiveTask(next.activeTask);
+    setCommunityTask(next.communityTask);
+    setCommunityStage(next.communityStage);
+    setCommunityChecks(next.communityChecks);
+    setPostedTask(next.postedTask);
+    setPostDraft(next.postDraft);
+    setAcceptedTaskIds(next.acceptedTaskIds);
+    setClosedTaskIds(next.closedTaskIds);
+    setAcceptedTaskActors(next.acceptedTaskActors);
+    setTaskEvents(next.taskEvents);
+    setActivityPerspective(next.activityPerspective);
+    setSavedTaskIds(next.savedTaskIds);
+    setSponsorFunded(next.sponsorFunded);
+    setSponsorSeeking(next.sponsorSeeking);
+    setThreadMessages(next.threadMessages);
+    setBlockedThreadIds(next.blockedThreadIds);
+    setBlockedRequesterNames(next.blockedRequesterNames);
+    setReportedTaskIds(next.reportedTaskIds);
+    setReportReasons(next.reportReasons);
+    setCompletionSubmissions(next.completionSubmissions);
+    setTaskReviews(next.taskReviews);
+    setNotificationsEnabled(next.notificationsEnabled);
+    setProfileAreaId(next.profileAreaId);
+    setPersonaState(nextPersona);
+  };
+  const value = useMemo(
+    () => ({
+      activeTab,
+      setActiveTab,
+      selectedTaskId,
+      setSelectedTaskId,
+      paidStage,
+      setPaidStage,
+      activeTask,
+      setActiveTask,
+      communityTask,
+      setCommunityTask,
+      communityStage,
+      setCommunityStage,
+      communityChecks,
+      setCommunityChecks,
+      postedTask,
+      setPostedTask,
+      ownedTasks,
+      setOwnedTasks,
+      remoteTasks,
+      remoteTasksError,
+      refreshRemoteTasks,
+      postDraft,
+      setPostDraft,
+      acceptedTaskIds,
+      setAcceptedTaskIds,
+      closedTaskIds,
+      setClosedTaskIds,
+      acceptedTaskActors,
+      setAcceptedTaskActors,
+      taskEvents,
+      setTaskEvents,
+      activityPerspective,
+      setActivityPerspective,
+      savedTaskIds,
+      setSavedTaskIds,
+      sponsorFunded,
+      setSponsorFunded,
+      sponsorSeeking,
+      setSponsorSeeking,
+      youthApprovedTaskId,
+      setYouthApprovedTaskId,
+      youthApprovalTaskId,
+      setYouthApprovalTaskId,
+      youthDeclinedTaskId,
+      setYouthDeclinedTaskId,
+      guardianSupervisedTaskId,
+      setGuardianSupervisedTaskId,
+      guardianSupervisionStatus,
+      setGuardianSupervisionStatus,
+      persona,
+      setPersona,
+      accessTermsAccepted,
+      setAccessTermsAccepted,
+      guardianLinked,
+      setGuardianLinked,
+      youthAge,
+      setYouthAge,
+      threadMessages,
+      setThreadMessages,
+      blockedThreadIds,
+      setBlockedThreadIds,
+      blockedRequesterNames,
+      setBlockedRequesterNames,
+      reportedTaskIds,
+      setReportedTaskIds,
+      reportReasons,
+      setReportReasons,
+      moderationHolds,
+      setModerationHolds,
+      completionSubmissions,
+      setCompletionSubmissions,
+      taskReviews,
+      setTaskReviews,
+      notificationsEnabled,
+      setNotificationsEnabled,
+      seenSpecialJobIds,
+      setSeenSpecialJobIds,
+      refusedJobIds,
+      setRefusedJobIds,
+      profileAreaId,
+      setProfileAreaId,
+      profilePhotos,
+      setProfilePhotos,
+    }),
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+  );
+
+  return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
+}
+
+/**
+ * A listing row carries a category id rather than an icon, because an icon is a
+ * React component and cannot be stored. The catalog is the source of truth for
+ * both the icon and the category label on the way back out.
+ */
+export function taskFromRow(row: Record<string, unknown>): Task {
+  const categoryId = String(row.category_id ?? "");
+  const category = categoryById(categoryId);
+  const earning = row.earning === null || row.earning === undefined ? undefined : Number(row.earning);
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    title: String(row.title),
+    description: String(row.description),
+    mode: String(row.mode) as TaskMode,
+    earning,
+    coords: { lat: Number(row.lat), lng: Number(row.lng) },
+    areaId: String(row.area_id) as AreaId,
+    area: String(row.area),
+    time: String(row.time_label),
+    duration: String(row.duration),
+    icon: category?.icon ?? Wrench,
+    category: String(row.category),
+    included: String(row.included ?? ""),
+    excluded: String(row.excluded ?? ""),
+    completion: String(row.completion ?? ""),
+    requesterName: (row.requester_name as string) || "A neighbor",
+    requesterInitials: initialsFromName((row.requester_name as string) || "A neighbor"),
+    youthEligible: Boolean(row.youth_eligible),
+    listingPaused: Boolean(row.listing_paused),
+    customPending: Boolean(row.custom_pending) || undefined,
+  };
+}

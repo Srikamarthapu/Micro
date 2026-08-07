@@ -499,13 +499,50 @@
 .boundary-note.custom-warning svg { color: var(--micro-orange); }
 .truth-card.custom-truth { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
 .truth-card.custom-truth svg { color: var(--micro-orange); }
-/* The job you have taken on, pinned above everything else in Nearby. */
-.active-commitment { display: grid; gap: 6px; margin: 0 0 18px; padding: 15px 16px 16px; border: 1px solid #bfe0d8; border-radius: 18px; background: var(--micro-green-soft); }
-.active-commitment-label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--micro-teal-dark); font-size: 11px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+/* The job you have taken on, pinned above everything else in Nearby. A quiet
+   strip while the start is far off; inside the arrival window it opens into the
+   address, the route out, and the scope, so turning up needs no other screen. */
+.active-job { display: grid; gap: 8px; margin: 0 0 18px; padding: 15px 16px 16px; border: 1px solid #bfe0d8; border-radius: 18px; background: var(--micro-green-soft); }
+.active-job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.active-job-label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--micro-teal-dark); font-size: 11px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+.active-job-countdown { margin: 0; color: var(--micro-teal-dark); font-size: 13px; font-weight: 850; white-space: nowrap; }
 .live-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--micro-teal); box-shadow: 0 0 0 3px rgba(10, 136, 124, 0.18); }
-.active-commitment h2 { margin: 2px 0 0; font-size: 19px; line-height: 1.18; }
-.active-commitment-meta { margin: 0; color: var(--micro-ink-soft); font-size: 13px; }
-.active-commitment .primary-button { margin-top: 8px; }
+.active-job h2 { margin: 2px 0 0; font-size: 19px; line-height: 1.18; }
+.active-job-meta { margin: 0; color: var(--micro-ink-soft); font-size: 13px; }
+.active-job .primary-button { margin-top: 4px; }
+
+/* Close enough to head over: the card lifts off the sheet and the countdown
+   carries the weight, so the change is legible without reading a word. */
+.active-job[data-stage="soon"],
+.active-job[data-stage="now"] { border-color: var(--micro-teal); background: #fff; box-shadow: var(--micro-shadow); }
+.active-job[data-stage="soon"] .active-job-countdown,
+.active-job[data-stage="now"] .active-job-countdown { font-size: 15px; }
+.active-job[data-stage="now"] { border-color: var(--micro-orange); }
+.active-job[data-stage="now"] .active-job-label,
+.active-job[data-stage="now"] .active-job-countdown { color: var(--micro-orange); }
+.active-job[data-stage="now"] .live-dot { background: var(--micro-orange); box-shadow: 0 0 0 3px rgba(217, 119, 24, 0.2); }
+
+.active-job-person { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding-top: 4px; }
+.active-job-person > span { display: grid; gap: 1px; min-width: 0; }
+.active-job-person strong { font-size: 14px; }
+.active-job-person small { color: var(--micro-ink-soft); font-size: 11px; }
+.active-job-message { display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid var(--micro-line); border-radius: 50%; background: #fff; color: var(--micro-teal); cursor: pointer; }
+
+.active-job-address { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--micro-line); border-radius: 15px; background: #fff; color: var(--micro-ink); text-decoration: none; }
+.active-job-address-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 12px; background: var(--micro-green-soft); color: var(--micro-teal); }
+.active-job-address > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.active-job-address strong { font-size: 14px; line-height: 1.25; }
+.active-job-address small { color: var(--micro-ink-soft); font-size: 11px; }
+.active-job-directions { display: flex; align-items: center; gap: 5px; color: var(--micro-teal-dark); font-size: 12px; font-weight: 850; white-space: nowrap; }
+
+.active-job-scope { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--micro-line); border-radius: 15px; background: #fff; }
+.active-job-scope ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.active-job-scope li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; font-size: 13px; line-height: 1.35; }
+.active-job-scope li svg { margin-top: 3px; color: var(--micro-teal); }
+.active-job-excluded,
+.active-job-done { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; margin: 0; color: var(--micro-ink-soft); font-size: 12px; line-height: 1.35; }
+.active-job-excluded svg { margin-top: 2px; color: var(--micro-orange); }
+.active-job-done svg { margin-top: 2px; color: var(--micro-teal); }
 .blocked-flag { color: var(--micro-ink-soft); }
 .blocked-flag svg { color: var(--micro-orange); }
 .review-flag { display: flex; align-items: center; gap: 5px; margin: 8px 0 0; color: var(--micro-orange); font-size: 11px; font-weight: 800; }
@@ -681,6 +718,10 @@
 .detail-pay-card strong { margin-top: 4px; color: var(--micro-teal-dark); font-size: 18px; }
 .detail-pay-card p { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 12px; border-top: 1px solid #cfe0d9; color: #4a665d; font-size: 11px; line-height: 1.35; }
 .detail-secondary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+/* Refusing a job is a preference, not a report, so it stays quiet rather than
+   red. Doubled selector so it wins over .quiet-action's danger color below. */
+.quiet-action.detail-refuse-action { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; margin: -4px 0 10px; padding: 0; border: 0; background: transparent; color: var(--micro-ink-soft); font-size: 13px; font-weight: 800; }
+.quiet-action.detail-refuse-action[aria-pressed="true"] { color: var(--micro-teal-dark); }
 .detail-secondary-actions .secondary-button { min-width: 0; padding: 0 10px; }
 
 .post-mode-strip { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 16px; padding: 10px 12px; border: 1px solid var(--micro-line); border-radius: 14px; background: #fffdfa; }
@@ -1272,6 +1313,11 @@
   height: 66px;
   min-height: 66px;
 }
+
+/* The accepted job sits on its real address rather than a privacy area, so its
+   pin is the one that reads as a destination instead of a listing. */
+.map-marker[data-exact="true"] > .map-avatar-bubble { border-color: var(--micro-orange); box-shadow: 0 0 0 5px rgba(217, 119, 24, 0.22), 0 6px 16px rgba(22, 51, 75, 0.2); }
+.map-marker[data-exact="true"] > .map-pin-label { border-color: var(--micro-orange); color: var(--micro-orange); }
 
 .map-marker > .map-avatar-bubble {
   position: relative;

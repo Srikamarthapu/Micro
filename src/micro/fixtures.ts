@@ -1,4 +1,4 @@
-import { CalendarBlank, HandHeart, House, Leaf, Package, Scissors, Sparkle, Tag, UsersThree, Wrench, type Icon } from "@phosphor-icons/react";
+import { HandHeart, House, Leaf, Package, Scissors, Sparkle, Tag, UsersThree, type Icon } from "@phosphor-icons/react";
 import { composeListing, defaultSelections, taskTemplates, templateById } from "../taskCatalog";
 import { startLabel, startMoment } from "./schedule";
 import type { PostDraft, Task, TaskMode } from "./types";
