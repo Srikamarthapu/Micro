@@ -481,6 +481,17 @@
 .catalog-category-head small { display: block; margin-top: 3px; color: var(--micro-ink-soft); font-size: 12px; }
 .boundary-note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px; border: 1px solid #d6e5df; border-radius: 14px; background: #eef6f2; color: #36574f; font-size: 12px; line-height: 1.4; }
 .boundary-note svg { flex: 0 0 auto; color: var(--micro-teal); }
+
+/* Custom tasks — unreviewed, so every surface that shows one says so. */
+.boundary-note.custom-warning { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
+.boundary-note.custom-warning svg { color: var(--micro-orange); }
+.truth-card.custom-truth { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
+.truth-card.custom-truth svg { color: var(--micro-orange); }
+.review-flag { display: flex; align-items: center; gap: 5px; margin: 8px 0 0; color: var(--micro-orange); font-size: 11px; font-weight: 800; }
+.review-flag svg { flex: 0 0 auto; }
+.category-tile[data-active="true"] { border-color: var(--micro-teal); background: var(--micro-green-soft); }
+.category-tile[data-active="true"] .category-tile-icon { background: #fffdfa; }
+.segmented-row[data-choices="6"] { grid-template-columns: repeat(3, 1fr); gap: 2px; }
 .catalog-results { display: grid; gap: 8px; }
 .catalog-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 11px; width: 100%; min-height: 66px; padding: 11px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: #fffdfa; color: var(--micro-ink); text-align: left; }
 .catalog-row[data-selected="true"] { border-color: var(--micro-teal); background: var(--micro-green-soft); }
@@ -494,7 +505,15 @@
 .section-label-value { color: var(--micro-teal-dark); }
 
 /* Chosen task, composed listing, and catalog-derived facts — step 3. */
-.chosen-task { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: var(--micro-paper-deep); }
+/* Sticky so the price and the way back to the catalog never scroll away. */
+.chosen-task { position: sticky; z-index: 6; top: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px 13px; border: 1px solid var(--micro-line); border-radius: 15px; background: var(--micro-paper-deep); box-shadow: 0 6px 14px rgba(31, 62, 88, 0.07); }
+.mobile-app-viewport[data-platform="android"] .chosen-task { top: 38px; }
+.chosen-task-body { display: grid; gap: 2px; min-width: 0; }
+.chosen-task-side { display: grid; justify-items: end; gap: 1px; }
+.chosen-task-price { display: grid; justify-items: end; }
+.chosen-task-price strong { color: var(--micro-teal-dark); font-size: 17px; line-height: 1.1; }
+.chosen-task-price small { color: var(--micro-ink-soft); font-size: 10px; }
+.chosen-task-side .text-button { min-height: 28px; font-size: 12px; }
 .chosen-task-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 13px; background: #fffdfa; color: var(--micro-teal); }
 .chosen-task strong { display: block; font-size: 15px; line-height: 1.2; }
 .chosen-task small { display: block; margin-top: 2px; color: var(--micro-ink-soft); font-size: 11px; }

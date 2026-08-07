@@ -81,6 +81,8 @@ export type TaskTemplate = {
   modes: TaskCatalogMode[];
   youthEligible: boolean;
   popularity: number;
+  /** True only for a requester-described task, which no one has reviewed. */
+  isCustom?: boolean;
 };
 
 type TemplateSeed = {
@@ -742,4 +744,83 @@ export function searchTemplates(pool: TaskTemplate[], query: string): TaskTempla
     const haystack = `${template.title} ${template.category} ${template.keywords.join(" ")}`.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Custom tasks                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The catalog is the safe path, but it cannot be complete. When a search finds
+ * nothing, a requester may describe the job themselves — and only then.
+ *
+ * A custom task keeps the typed surface as small as the feature allows: a title
+ * and a description. Category, duration, and the completion check stay bounded,
+ * and the safety boundary plus baseline exclusions are inherited from the chosen
+ * category rather than written by the requester. Nothing here has been reviewed,
+ * so `isCustom` follows the task all the way to the listing and must stay
+ * visible to whoever reads it.
+ */
+
+export const CUSTOM_TEMPLATE_ID = "custom";
+
+export const customDurations = [30, 45, 60, 90, 120, 180];
+
+export const customCompletions = [
+  { id: "confirm", label: "We confirm together", text: "The work is finished and we confirm it together in the thread." },
+  { id: "photo", label: "Photo in the thread", text: "You send a photo of the finished work in the thread." },
+  { id: "walkthrough", label: "Check before leaving", text: "We check the work together before you leave." },
+  { id: "delivered", label: "Delivered and confirmed", text: "The items are delivered and confirmed in the thread." },
+];
+
+/** Work Micro will not carry, checked against the only text a requester types. */
+const prohibitedPattern = /\b(electrical|wiring|gas line|gas fitting|roof|roofing|ladder|scaffold|chimney|weapon|gun|firearm|ammo|medication|prescription|medical care|nursing|injection|childcare|babysit|babysitting|nanny|demolition|asbestos|mould remediation|mold remediation|pest control|tow|towing)\b/i;
+
+export function customTextProblem(title: string, details: string): string | null {
+  const combined = `${title} ${details}`;
+  const match = combined.match(prohibitedPattern);
+  if (match) return `Micro cannot carry work involving “${match[0]}”. Describe a task that stays inside the category's safety boundary.`;
+  if (title.trim().length < 8) return "Give the task a clear title of at least 8 characters.";
+  if (details.trim().length < 25) return "Describe what the helper should do in at least 25 characters.";
+  return null;
+}
+
+export type CustomTaskInput = {
+  title: string;
+  details: string;
+  categoryId: string;
+  minutes: number;
+  completionId: string;
+};
+
+/**
+ * Shapes a custom description into the same structure a catalog entry has, so
+ * the rest of the posting flow, the composer, and the listing treat it
+ * identically — apart from the review marker it carries.
+ */
+export function buildCustomTemplate(input: CustomTaskInput): TaskTemplate {
+  const category = categoryById(input.categoryId) ?? categories[0];
+  const completion = customCompletions.find((entry) => entry.id === input.completionId) ?? customCompletions[0];
+  const minutes = customDurations.includes(input.minutes) ? input.minutes : 60;
+  return {
+    id: CUSTOM_TEMPLATE_ID,
+    categoryId: category.id,
+    category: category.label,
+    icon: category.icon,
+    title: input.title.trim(),
+    keywords: [],
+    summary: input.details.trim(),
+    included: "What is described above, and nothing beyond it.",
+    excluded: category.baseExcluded,
+    completion: completion.text,
+    boundary: category.boundary,
+    minutes,
+    pay: Math.max(15, Math.round((minutes / 60) * 26)),
+    options: [],
+    modes: allModes,
+    // Youth eligibility is granted per reviewed entry; an unreviewed task cannot earn it.
+    youthEligible: false,
+    popularity: 0,
+    isCustom: true,
+  };
 }
