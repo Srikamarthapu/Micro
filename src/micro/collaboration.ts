@@ -89,6 +89,8 @@ export type CollaborationState = {
   cancelAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   requestCompletion: (assignmentId: string) => Promise<CompletionCodeResult>;
   confirmCompletion: (assignmentId: string, code: string) => Promise<CollaborationResult>;
+  /** The helper's own issued code, or null for anyone else. */
+  fetchCompletionCode: (assignmentId: string) => Promise<string | null>;
   completeAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   sendMessage: (assignmentId: string, body: string) => Promise<CollaborationResult>;
   refresh: () => Promise<void>;
@@ -106,6 +108,7 @@ export function emptyCollaboration(): CollaborationState {
     cancelAssignment: unavailable,
     requestCompletion: unavailable,
     confirmCompletion: unavailable,
+    fetchCompletionCode: async () => null,
     completeAssignment: unavailable,
     sendMessage: unavailable,
     refresh: async () => {},
@@ -251,6 +254,21 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     return { ok: true };
   }, [assignments, refresh, userId]);
 
+  // Re-reading the issued code rather than remembering it in component state,
+  // so closing the job screen or reloading never strands a helper who has
+  // already told the requester one is waiting. RLS answers this for the helper
+  // and returns nothing to anyone else, including the requester.
+  const fetchCompletionCode = useCallback(async (assignmentId: string): Promise<string | null> => {
+    if (!supabase || !userId) return null;
+    const { data, error: codeError } = await supabase
+      .from("task_completion_codes")
+      .select("code")
+      .eq("assignment_id", assignmentId)
+      .maybeSingle();
+    if (codeError || !data) return null;
+    return String((data as { code: unknown }).code);
+  }, [userId]);
+
   const cancelAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
@@ -277,8 +295,8 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
   }, [assignments, refresh, userId]);
 
   return useMemo(
-    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, requestCompletion, confirmCompletion, completeAssignment, sendMessage, refresh }),
-    [acceptTask, assignments, cancelAssignment, completeAssignment, confirmCompletion, error, loading, messagesByAssignment, refresh, requestCompletion, sendMessage, withdrawAssignment],
+    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, requestCompletion, confirmCompletion, fetchCompletionCode, completeAssignment, sendMessage, refresh }),
+    [acceptTask, assignments, cancelAssignment, completeAssignment, confirmCompletion, error, fetchCompletionCode, loading, messagesByAssignment, refresh, requestCompletion, sendMessage, withdrawAssignment],
   );
 }
 
@@ -298,6 +316,14 @@ function collaborationFailure(error: { code?: string; message?: string }): Colla
   if (message.includes("assignment_not_found")) return { ok: false, message: "This protected match no longer exists." };
   if (message.includes("assignment_withdrawal_not_allowed")) return { ok: false, message: "Only the active helper can withdraw from this task." };
   if (message.includes("assignment_completion_not_allowed")) return { ok: false, message: "Only the requester can mark this matched task complete." };
+  if (message.includes("assignment_cancellation_not_allowed")) return { ok: false, message: "Only the requester can cancel this matched task." };
+  // The wrong-code and lockout cases are the ones a real pair will actually
+  // hit, standing next to each other, so they say what to do next.
+  if (message.includes("completion_code_incorrect")) return { ok: false, message: "That code does not match. Ask the helper to read it out again." };
+  if (message.includes("completion_code_locked")) return { ok: false, message: "Too many wrong codes. Try again in 15 minutes." };
+  if (message.includes("completion_not_requested_yet")) return { ok: false, message: "The helper has not marked this job finished yet." };
+  if (message.includes("completion_request_not_allowed")) return { ok: false, message: "Only the matched helper can mark this job finished." };
+  if (message.includes("completion_confirmation_not_allowed")) return { ok: false, message: "Only the requester can enter the completion code." };
   if (message.includes("live_authenticated_session_required")) return { ok: false, message: "Your session needs to be refreshed before continuing." };
   if (message.includes("message_not_allowed") || message.includes("not_a_task_participant")) return { ok: false, message: "Only the matched requester and helper can use this thread." };
   return { ok: false, message: error.message || "Micro could not complete that action." };

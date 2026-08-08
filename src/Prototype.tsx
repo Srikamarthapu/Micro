@@ -2667,42 +2667,68 @@ function LiveAssignmentSyncState({ task }: { task: Task }) {
 function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: TaskAssignment }) {
   const flow = useFlow();
   const auth = useAuth();
+  const keyboard = useKeyboard();
   const { collaboration, setActiveTab, setAcceptedTaskIds, setClosedTaskIds, setCommunityStage, setPaidStage, setTaskEvents } = useMicro();
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [issuedCode, setIssuedCode] = useState("");
+  const [codeEntry, setCodeEntry] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const userId = auth.session?.user.id ?? null;
   const isRequester = assignment.requesterId === userId;
   const isHelper = assignment.helperId === userId;
   const active = assignment.status === "accepted";
+  const completionRequested = Boolean(assignment.completionRequestedAt);
+
+  // The code is server state, not something this screen remembers. Reopening
+  // the job asks for it again, which is also what makes it survive a reload.
+  const readCode = collaboration.fetchCompletionCode;
+  useEffect(() => {
+    if (!isHelper || !completionRequested) return;
+    let current = true;
+    void readCode(assignment.id).then((code) => { if (current && code) setIssuedCode(code); });
+    return () => { current = false; };
+  }, [assignment.id, completionRequested, isHelper, readCode]);
   const statusLabel = assignment.status === "completed" ? "Completed" : assignment.status === "canceled" ? "Canceled" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched";
   const roleLabel = isRequester ? "Requester" : isHelper ? (task.mode === "community" ? "Volunteer" : "Helper") : "Participant";
 
-  const settle = async () => {
-    if (!active || busy || (!isRequester && !isHelper)) return;
+  // The helper says the work is done and is handed the code to read out. It is
+  // the same code every time it is asked for, so a reload never leaves the
+  // requester holding a number that no longer opens the task.
+  const finishJob = async () => {
+    if (!active || busy || !isHelper) return;
     setBusy(true);
     setError("");
-    const result = isRequester
-      ? await collaboration.completeAssignment(assignment.id)
-      : await collaboration.withdrawAssignment(assignment.id);
+    const result = await collaboration.requestCompletion(assignment.id);
     setBusy(false);
     if (!result.ok) {
-      setError(result.message ?? "Micro could not update this match.");
+      setError(result.message ?? "Micro could not request completion.");
       return;
     }
-    setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
-    if (isRequester) {
-      setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
-      if (task.mode === "community") setCommunityStage("Completed");
-      else setPaidStage("Completed");
-      appendTaskEvent(setTaskEvents, task.id, "Requester marked the live match complete. The listing was paused and the participant thread retained.");
-    } else {
-      if (task.mode === "community") setCommunityStage("Canceled");
-      else setPaidStage("Reopened");
-      appendTaskEvent(setTaskEvents, task.id, "Helper withdrew from the live match. The listing is available for a new eligible helper and the participant thread is retained read-only.");
+    if (result.code) setIssuedCode(result.code);
+    appendTaskEvent(setTaskEvents, task.id, "Helper reported the job finished and was issued a completion code for the requester to enter.");
+  };
+
+  // The requester types what the helper read out. A wrong code is rejected by
+  // the database, which never sends the right one back — so the only way to
+  // learn it is from the person who did the work.
+  const confirmCode = async () => {
+    if (!active || busy || !isRequester) return;
+    setBusy(true);
+    setError("");
+    const result = await collaboration.confirmCompletion(assignment.id, codeEntry);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message ?? "Micro could not complete this task.");
+      return;
     }
-    setConfirmOpen(false);
+    setCodeEntry("");
+    keyboard.hide();
+    setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
+    setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
+    if (task.mode === "community") setCommunityStage("Completed");
+    else setPaidStage("Completed");
+    appendTaskEvent(setTaskEvents, task.id, "Requester entered the helper's completion code. The job is finished, the listing was paused, and the participant thread is retained.");
   };
 
   // Calling the task off. The requester cancels it outright; the helper's
@@ -2736,12 +2762,32 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
     <section className="commitment-brief"><div><span>Agreed scope</span><strong>{task.included}</strong></div><div><span>Not included</span><strong>{task.excluded}</strong></div><div><span>Protected meeting place</span><strong>{task.privateAddress || "Open the matched task details before traveling"}</strong></div></section>
     {active ? null : <section className="workflow-card"><p className="eyebrow">Retained task record</p><h2>{assignment.status === "completed" ? "The requester closed this match." : "The helper ended this commitment."}</h2><p>The participant thread remains readable for both accounts, but new messages and task actions are closed.</p></section>}
     <button className="secondary-button workflow-message" onClick={() => { setActiveTab("messages"); flow.pop(); }}>Open protected messages</button>
-    {active && isRequester ? <>
-      {/* Finishing well is the outcome this screen is for, so it gets the
-          full-width positive button rather than a muted red line of text. */}
-      <button className="primary-button complete-match-button" disabled={busy} onClick={() => setConfirmOpen((current) => !current)}><CheckCircle size={22} weight="fill" /> {confirmOpen ? "Keep this match active" : "Mark this match complete"}</button>
-      {confirmOpen ? <section className="cancellation-card"><strong>Complete this live match?</strong><p>The listing will be paused, both participants will keep a read-only thread, and this cannot be undone in the app.</p><button className="primary-button" disabled={busy} onClick={() => { void settle(); }}>{busy ? "Updating…" : "Confirm completion"}</button></section> : null}
-    </> : null}
+    {/* The helper's side of the handshake: report the work done, then read the
+        code out. Nothing here can close the task on its own. */}
+    {active && isHelper ? (completionRequested ? (
+      <section className="completion-code-card" role="status">
+        <p className="eyebrow">Read this out to {assignment.requesterName}</p>
+        {issuedCode
+          ? <p className="completion-code" aria-label={`Completion code ${issuedCode.split("").join(" ")}`}>{issuedCode}</p>
+          : <p className="completion-code-missing">Reopen this job from your device to see the code again.</p>}
+        <p>The job is finished only once they type it in. Never send it in the thread — say it in person, so the code proves you were there.</p>
+      </section>
+    ) : (
+      <button className="primary-button complete-match-button" disabled={busy} onClick={() => { void finishJob(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Getting your code…" : "I've finished this job"}</button>
+    )) : null}
+
+    {/* The requester's side: the code is the only way through. */}
+    {active && isRequester ? (completionRequested ? (
+      <section className="completion-entry-card">
+        <p className="eyebrow">{assignment.helperName} finished this job</p>
+        <h2>Enter their four-digit code.</h2>
+        <p>Ask for it in person. Entering it releases payment and closes the job.</p>
+        <KeyboardInput className="completion-code-input" value={codeEntry} onChange={(event) => setCodeEntry(event.target.value.replace(/\D/g, "").slice(0, 4))} onBlur={() => keyboard.hide()} inputMode="numeric" autoComplete="one-time-code" placeholder="0000" aria-label="Four-digit completion code" />
+        <button className="primary-button complete-match-button" disabled={busy || codeEntry.length !== 4} onClick={() => { void confirmCode(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Checking…" : "Complete and release payment"}</button>
+      </section>
+    ) : (
+      <section className="workflow-card"><p className="eyebrow">Waiting on the helper</p><h2>{assignment.helperName} has not marked this finished yet.</h2><p>When they do, a four-digit code appears on their device. You will enter it here to close the job and release payment.</p></section>
+    )) : null}
     {active && (isRequester || isHelper) ? <>
       <button className="quiet-action route-quiet-action" onClick={() => setCancelOpen((current) => !current)}>{cancelOpen ? <X size={18} /> : <Warning size={18} />} {cancelOpen ? "Keep this activity" : "Cancel activity"}</button>
       {cancelOpen ? <section className="cancellation-card"><strong>Are you sure you want to finish and cancel this task?</strong><p>{isRequester ? "The task is called off, the listing is paused rather than reopened, and both participants keep this thread as a read-only record." : "You leave this commitment and the listing reopens for another eligible helper. Both participants keep this thread as a read-only record."}</p><div className="cancellation-answers"><button className="danger-button" disabled={busy} onClick={() => { void cancelActivity(); }}>{busy ? "Canceling…" : "Yes, cancel this task"}</button><button className="secondary-button" disabled={busy} onClick={() => setCancelOpen(false)}>No, keep it</button></div><p className="fine-print">Everyone in the thread is told the activity was canceled.</p></section> : null}

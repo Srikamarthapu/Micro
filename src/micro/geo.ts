@@ -60,21 +60,39 @@ export function areaForPoint(point: LatLng): MicroArea | undefined {
  * Ask the device where it is. Wrapped so the callers deal in one promise and
  * one plain-language failure instead of the callback API and its error codes.
  */
-export function readDeviceLocation(): Promise<{ point?: LatLng; error?: string }> {
-  if (!navigator.geolocation) return Promise.resolve({ error: "This browser cannot share a location." });
+function locateOnce(options: PositionOptions): Promise<{ point?: LatLng; code?: number }> {
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
       (position) => resolve({ point: { lat: position.coords.latitude, lng: position.coords.longitude } }),
-      (error) => resolve({
-        error: error.code === error.PERMISSION_DENIED
-          ? "Location permission was declined. Your approximate area is used instead."
-          : error.code === error.TIMEOUT
-            ? "Finding your location took too long. Your approximate area is used instead."
-            : "Your location could not be read. Your approximate area is used instead.",
-      }),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+      (error) => resolve({ code: error.code }),
+      options,
     );
   });
+}
+
+/**
+ * Micro only ever draws a listing inside a 0.35-mile circle, so street-level
+ * precision buys nothing. High accuracy asks for GPS, which a laptop does not
+ * have — it falls back to wifi positioning anyway, just slower and more likely
+ * to time out. So the coarse, fast fix is tried first and the precise one only
+ * as a fallback.
+ */
+export async function readDeviceLocation(): Promise<{ point?: LatLng; error?: string }> {
+  if (!navigator.geolocation) return { error: "This browser cannot share a location." };
+
+  const coarse = await locateOnce({ enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+  if (coarse.point) return { point: coarse.point };
+  if (coarse.code === 1) return { error: "Location permission was declined. Your approximate area is used instead." };
+
+  const precise = await locateOnce({ enableHighAccuracy: true, timeout: 15000, maximumAge: 600000 });
+  if (precise.point) return { point: precise.point };
+  if (precise.code === 1) return { error: "Location permission was declined. Your approximate area is used instead." };
+
+  return {
+    error: precise.code === 3
+      ? "Finding your location timed out. On a Mac, check System Settings → Privacy & Security → Location Services is on for your browser."
+      : "Your device could not report a location. Your approximate area is used instead.",
+  };
 }
 
 export function distanceMiles(from: LatLng, to: LatLng) {

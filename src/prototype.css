@@ -951,6 +951,50 @@
 .cancellation-answers .secondary-button { width: 100%; margin: 0; }
 .cancellation-card .fine-print { margin-top: 10px; color: #765d5d; }
 
+/* The code is the whole point of the screen it sits on, so it is set large
+   enough to read aloud across a front yard without squinting at a phone. */
+.completion-code-card {
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid #bfe3da;
+  border-radius: 18px;
+  background: var(--micro-green-soft);
+  text-align: center;
+}
+.completion-code {
+  margin: 6px 0 10px;
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  font-variant-numeric: tabular-nums;
+  color: var(--micro-teal-dark);
+}
+.completion-code-missing { margin: 6px 0 10px; font-weight: 700; color: var(--micro-red); }
+.completion-code-card p { color: #4a6763; font-size: 12px; line-height: 1.45; }
+
+.completion-entry-card {
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid var(--micro-line);
+  border-radius: 18px;
+  background: #fffdfa;
+}
+.completion-entry-card h2 { margin: 2px 0 4px; font-size: 18px; }
+.completion-entry-card p { color: var(--micro-muted); font-size: 12px; line-height: 1.45; }
+.completion-code-input {
+  width: 100%;
+  margin: 14px 0 4px;
+  padding: 14px;
+  border: 1px solid var(--micro-line);
+  border-radius: 15px;
+  background: #fff;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.3em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Completing a match is the good ending, and the button says so: full width,
    the affirmative teal, and weighted heavier than the quiet cancel below it. */
 .complete-match-button {
