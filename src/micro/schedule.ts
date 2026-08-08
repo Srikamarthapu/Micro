@@ -107,6 +107,17 @@ export function countdownLabel(now: Date, start: Date): string {
   return `Started ${spanLabel(-minutes)} ago`;
 }
 
+/** How long ago something was recorded, for notices and thread rows. */
+export function agoLabel(now: Date, moment: Date): string {
+  const minutes = Math.floor((now.getTime() - moment.getTime()) / 60000);
+  if (minutes < 1) return "Now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 7 ? `${days}d` : weekdayNames[moment.getDay()];
+}
+
 /** How that moment reads to whoever is browsing right now. */
 export function startLabel(now: Date, start: Date, slot: string): string {
   const from = new Date(now);

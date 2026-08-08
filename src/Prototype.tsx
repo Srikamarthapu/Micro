@@ -81,7 +81,8 @@ import {
 } from "./taskCatalog";
 import { supabase } from "./supabase";
 import { areaById, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
-import { arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
+import { agoLabel, arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
+import { liveAssignmentFor, type CollaborationState } from "./micro/collaboration";
 import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
 import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
 import { AuthProvider, initialsFromName, useAuth, type AuthContextValue } from "./micro/AuthProvider";
@@ -1373,8 +1374,11 @@ function makeTaskScreen(task: Task): FlowScreen {
 function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) {
   const auth = useAuth();
   const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds, refusedJobIds, setRefusedJobIds } = useMicro();
+  const { collaboration } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const [phase, setPhase] = useState<"detail" | "review" | "approval" | "accepted">("detail");
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
   const TaskIcon = task.icon;
   const ModeIcon = modeMeta[task.mode].icon;
   const detail = getTaskDetails(task);
@@ -1389,12 +1393,25 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
   const needsApproval = persona === "youth" && task.youthEligible && youthApprovedTaskId !== task.id;
   const accountCanAccept = auth.demoMode || auth.capabilities.can_accept_tasks;
 
-  const accept = () => {
-    if (isOwnedListing || !accountCanAccept) return;
+  const accept = async () => {
+    if (isOwnedListing || !accountCanAccept || accepting) return;
     if (needsApproval) {
       setYouthApprovalTaskId(task.id);
       setPhase("approval");
       return;
+    }
+    // A listing that came from Supabase has a real requester waiting on the
+    // other side, so the acceptance is recorded there before anything local
+    // claims the match. A fixture has no such counterpart and stays local.
+    if (task.ownerId) {
+      setAccepting(true);
+      const result = await collaboration.acceptTask(task.id);
+      setAccepting(false);
+      if (!result.ok) {
+        setAcceptError(result.message ?? "We couldn't record this acceptance.");
+        return;
+      }
+      setAcceptError(null);
     }
     setAcceptedTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]);
     setAcceptedTaskActors((current) => ({ ...current, [task.id]: persona === "youth" ? "youth" : "adult" }));
@@ -1514,7 +1531,7 @@ function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) 
         {/* The refusal sits beside the accept button so the two answers to a job
            are offered in the same place. */}
         {phase === "detail" ? isOwnedListing ? <div className="actionbar-stack"><button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Manage listing in Activity <ArrowRight size={19} /></button><button className="neighbor-preview-toggle" onClick={() => ownership.toggle(task)}>Accept as a neighbor (prototype only)</button></div> : <div className="actionbar-row"><button className="refuse-square-button" aria-pressed={isRefused} aria-label={isRefused ? "Notify me about this job again" : "Refuse this job"} onClick={() => { if (isRefused) { setRefusedJobIds((current) => current.filter((id) => id !== task.id)); return; } setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]); onDone(); }}>{isRefused ? <Bell size={22} weight="fill" aria-hidden="true" /> : <X size={22} weight="bold" aria-hidden="true" />}</button><button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment || requesterBlocked || youthBlocked || !accessTermsAccepted || persona === "guardian" || listingReported} onClick={() => setPhase("review")}>{!accountCanAccept ? "Account cannot accept tasks" : listingReported ? "Listing is in review" : persona === "guardian" ? "Guardian view cannot accept tasks" : hasOtherCommitment ? "Finish your active commitment first" : requesterBlocked ? "Blocked from this requester" : !accessTermsAccepted ? "Accept terms to participate" : persona === "youth" && youthAge < 15 ? "Youth Mode is for ages 15–17" : persona === "youth" && !guardianLinked ? "Link a guardian first" : youthBlocked ? "Unavailable in Youth Mode" : task.mode === "community" ? "Volunteer for this" : "I can help"}</button></div> : null}
-        {phase === "review" ? <button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment} onClick={accept}>{!accountCanAccept ? "Account cannot accept tasks" : hasOtherCommitment ? "Another commitment is active" : needsApproval ? "Request guardian approval" : "Accept this task"}</button> : null}
+        {phase === "review" ? <div className="actionbar-stack">{acceptError ? <p className="form-error" role="alert">{acceptError}</p> : null}<button className="primary-button" disabled={!accountCanAccept || hasOtherCommitment || accepting} onClick={() => { void accept(); }}>{!accountCanAccept ? "Account cannot accept tasks" : hasOtherCommitment ? "Another commitment is active" : accepting ? "Recording your acceptance…" : needsApproval ? "Request guardian approval" : "Accept this task"}</button></div> : null}
         {phase === "approval" ? <button className="primary-button" onClick={() => { setActiveTab("profile"); onDone(); }}>Open Youth Mode <ArrowRight size={19} /></button> : null}
         {phase === "accepted" ? <button className="primary-button" onClick={() => { setActiveTab("activity"); onDone(); }}>Go to Activity <ArrowRight size={19} /></button> : null}
       </div>
@@ -2162,10 +2179,51 @@ function makeNotificationsScreen(): FlowScreen {
   return { id: "notifications", headerHeight: 66, header: (flow) => <RouteHeader title="Notifications" onBack={flow.pop} />, render: () => <NotificationsScreen /> };
 }
 
+type Notice = { icon: Icon; title: string; copy: string; time: string; tab: TabId; task?: Task };
+
+/**
+ * The notices that came from the other person: an acceptance on something you
+ * posted, and the newest reply in any thread you are party to. Both sides are
+ * covered by one pass, because "who is the other person here" is just whoever
+ * did not do the thing.
+ */
+function collaborationNotices(collaboration: CollaborationState, signedInUserId: string | null): Notice[] {
+  if (!signedInUserId) return [];
+  const now = new Date();
+  const notices: Notice[] = [];
+
+  for (const assignment of collaboration.assignments) {
+    if (assignment.status !== "accepted" || assignment.requesterId !== signedInUserId) continue;
+    notices.push({
+      icon: HandHeart,
+      title: `${assignment.helperName} accepted your job`,
+      copy: `${assignment.taskTitle} · open the task thread to agree on arrival details.`,
+      time: agoLabel(now, new Date(assignment.createdAt)),
+      tab: "messages",
+    });
+  }
+
+  for (const thread of Object.values(collaboration.messagesByTask)) {
+    // Your own lines are not news, and a thread you have not been replied to in
+    // has nothing to announce.
+    const latest = [...thread].reverse().find((message) => message.senderId !== signedInUserId);
+    if (!latest) continue;
+    notices.push({
+      icon: ChatCircle,
+      title: `New message from ${latest.senderName}`,
+      copy: latest.body,
+      time: agoLabel(now, new Date(latest.createdAt)),
+      tab: "messages",
+    });
+  }
+
+  return notices;
+}
+
 function NotificationsScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, remoteTasks, blockedThreadIds, blockedRequesterNames, profileAreaId, refusedJobIds, setSelectedTaskId, setSeenSpecialJobIds } = useMicro();
+  const { setActiveTab, paidStage, persona, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, activeTask, communityTask, acceptedTaskIds, closedTaskIds, acceptedTaskActors, taskEvents, moderationHolds, notificationsEnabled, setNotificationsEnabled, sponsorFunded, ownedTasks, remoteTasks, blockedThreadIds, blockedRequesterNames, profileAreaId, refusedJobIds, setSelectedTaskId, setSeenSpecialJobIds, collaboration } = useMicro();
   const openTab = (tab: TabId) => { setActiveTab(tab); flow.pop(); };
   // A job notice opens that job, not just the tab it lives on.
   const openJob = (task: Task) => { setSelectedTaskId(task.id); setActiveTab("nearby"); flow.replace(makeTaskScreen(task)); };
@@ -2231,6 +2289,12 @@ function NotificationsScreen() {
       { icon: ChatCircle, title: "Task thread ready", copy: "Use the protected thread for arrival, scope changes, and safety context.", time: "7m", tab: "messages" },
       { icon: CalendarBlank, title: "Start-window support", copy: `${lifecycleTask.time}. Arrival tools remain with this commitment.`, time: "1h", tab: "activity" },
     );
+  }
+  // What the other side did. These lead the list: an acceptance or a reply is
+  // the only thing here that came from another person rather than from this
+  // device's own fixtures.
+  for (const notice of collaborationNotices(collaboration, auth.session?.user.id ?? null).reverse()) {
+    notices.unshift(notice);
   }
   if (lifecycleTask && moderationHolds[lifecycleTask.id]) notices.push({ icon: Warning, title: "Support review is open", copy: "Participant actions remain paused; only support authority can resolve the task report.", time: "Now", tab: "activity" });
   if (latestEvent) notices.push({ icon: CheckCircle, title: "Latest task record", copy: latestEvent.text, time: "Now", tab: "activity" });
@@ -2625,9 +2689,54 @@ function getThreadSeed(task: Task): MessageItem[] {
   ];
 }
 
+/**
+ * A thread is server-backed the moment Supabase holds a line for it. Until then
+ * the local fixture seed stands in, so a fixture task still reads like a
+ * conversation without pretending anything was delivered.
+ */
+function resolveThread(
+  task: Task,
+  localThreads: Record<string, MessageItem[]>,
+  collaboration: CollaborationState,
+  signedInUserId: string | null,
+): { items: MessageItem[]; server: boolean } {
+  const serverThread = collaboration.messagesByTask[task.id];
+  if (serverThread?.length) {
+    return {
+      items: serverThread.map((message, index) => ({
+        id: index + 1,
+        mine: message.senderId === signedInUserId,
+        text: message.body,
+      })),
+      server: true,
+    };
+  }
+  return { items: localThreads[task.id] ?? getThreadSeed(task), server: false };
+}
+
+/** The other person's name on a server thread, from whichever side you are on. */
+function counterpartName(task: Task, collaboration: CollaborationState, signedInUserId: string | null): string | null {
+  const assignment = liveAssignmentFor(collaboration.assignments, task.id);
+  if (!assignment) return null;
+  return assignment.requesterId === signedInUserId ? assignment.helperName : (task.requesterName ?? "A neighbor");
+}
+
 function MessagesScreen() {
   const flow = useFlow();
-  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId } = useMicro();
+  const auth = useAuth();
+  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, collaboration, remoteTasks, ownedTasks } = useMicro();
+  const signedInUserId = auth.session?.user.id ?? null;
+  // Threads Supabase knows about, on either side of the match. They are found by
+  // task id rather than by persona state, because the server is the only place
+  // that knows a second person is involved at all.
+  const serverThreadTasks = useMemo(() => {
+    const pool = new Map([...remoteTasks, ...ownedTasks].map((task) => [task.id, task] as const));
+    const ids = new Set([
+      ...Object.keys(collaboration.messagesByTask),
+      ...collaboration.assignments.filter((assignment) => assignment.status === "accepted").map((assignment) => assignment.taskId),
+    ]);
+    return [...ids].map((id) => pool.get(id)).filter((task): task is Task => Boolean(task));
+  }, [collaboration.assignments, collaboration.messagesByTask, ownedTasks, remoteTasks]);
   const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
   const paidInScope = Boolean(actor && acceptedTaskActors[activeTask.id] === actor && (acceptedTaskIds.includes(activeTask.id) || taskEvents[activeTask.id]?.length));
@@ -2635,8 +2744,9 @@ function MessagesScreen() {
   const liveTasks = [paidInScope ? activeTask : null, communityInScope && communityTask ? communityTask : null].filter((task): task is Task => Boolean(task));
   const youthReviewId = youthApprovalTaskId ?? youthApprovedTaskId ?? guardianSupervisedTaskId;
   const youthReviewTask = youthReviewId ? [...tasks, sponsoredFixtureTask].find((task) => task.id === youthReviewId) ?? null : null;
-  const inScope = persona === "adult" ? [...liveTasks, ...pastThreadTasks] : persona === "youth" ? [...liveTasks.filter((task) => task.youthEligible), ...(youthReviewTask ? [youthReviewTask] : [])] : youthReviewTask ? [youthReviewTask] : [];
-  const recordsWhilePaused = inScope.filter((task) => task.id.endsWith("-history") || Boolean(taskEvents[task.id]?.length) || Boolean(threadMessages[task.id]?.length) || task.id === youthReviewTask?.id || blockedThreadIds.includes(task.id) || reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]));
+  // Server threads lead: they are the only ones with someone waiting on a reply.
+  const inScope = persona === "adult" ? [...serverThreadTasks, ...liveTasks, ...pastThreadTasks] : persona === "youth" ? [...liveTasks.filter((task) => task.youthEligible), ...(youthReviewTask ? [youthReviewTask] : [])] : youthReviewTask ? [youthReviewTask] : [];
+  const recordsWhilePaused = inScope.filter((task) => task.id.endsWith("-history") || Boolean(taskEvents[task.id]?.length) || Boolean(threadMessages[task.id]?.length) || Boolean(collaboration.messagesByTask[task.id]?.length) || task.id === youthReviewTask?.id || blockedThreadIds.includes(task.id) || reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]));
   const threadTasks = Array.from(new Map((participationReady ? inScope : recordsWhilePaused).map((task) => [task.id, task])).values());
 
   return (
@@ -2649,13 +2759,14 @@ function MessagesScreen() {
         <section className="thread-list" aria-label="Task messages">
           {threadTasks.map((task, index) => {
             const detail = getTaskDetails(task);
-            const messages = threadMessages[task.id] ?? getThreadSeed(task);
+            const { items: messages, server } = resolveThread(task, threadMessages, collaboration, signedInUserId);
+            const other = counterpartName(task, collaboration, signedInUserId) ?? detail.requester;
             const last = messages[messages.length - 1];
             const blocked = blockedThreadIds.includes(task.id) || blockedRequesterNames.includes(detail.requester);
             const reported = reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]);
-            const assigned = Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
+            const assigned = server || Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
             const reviewOnly = !task.id.endsWith("-history") && !assigned && (persona === "guardian" || persona === "youth");
-            const preview = blocked ? "Messaging blocked in this local fixture." : reported ? "Support review is open for this task." : reviewOnly ? "Guardian review only · no assignment or messages yet." : `${last.mine ? "You" : detail.requester.split(" ")[0]}: ${last.text}`;
+            const preview = blocked ? "Messaging blocked in this local fixture." : reported ? "Support review is open for this task." : reviewOnly ? "Guardian review only · no assignment or messages yet." : `${last.mine ? "You" : other.split(" ")[0]}: ${last.text}`;
             const unread = participationReady && index === 0 && !blocked && !reviewOnly;
             return <button key={task.id} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => flow.push(makeMessageScreen(task))}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{modeMeta[task.mode].label} · {blocked ? "Blocked" : reported ? "In review" : reviewOnly ? "Not assigned" : task.time}</small></span>{unread ? <span className="unread-dot" /> : null}</button>;
           })}
@@ -2675,23 +2786,26 @@ function makeMessageScreen(task: Task): FlowScreen {
 function MessageThread({ task }: { task: Task }) {
   const keyboard = useKeyboard();
   const { bottomInset } = useKeyboardInsets();
-  const { threadMessages, setThreadMessages, blockedThreadIds, setBlockedThreadIds, blockedRequesterNames, setBlockedRequesterNames, reportedTaskIds, setReportedTaskIds, reportReasons, setReportReasons, moderationHolds, setModerationHolds, taskEvents, setTaskEvents, acceptedTaskIds, acceptedTaskActors, persona, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, setGuardianSupervisionStatus } = useMicro();
+  const auth = useAuth();
+  const { threadMessages, setThreadMessages, blockedThreadIds, setBlockedThreadIds, blockedRequesterNames, setBlockedRequesterNames, reportedTaskIds, setReportedTaskIds, reportReasons, setReportReasons, moderationHolds, setModerationHolds, taskEvents, setTaskEvents, acceptedTaskIds, acceptedTaskActors, persona, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, setGuardianSupervisionStatus, collaboration } = useMicro();
   const detail = getTaskDetails(task);
-  const person = detail.requester;
+  const signedInUserId = auth.session?.user.id ?? null;
+  const person = counterpartName(task, collaboration, signedInUserId) ?? detail.requester;
   const blocked = blockedThreadIds.includes(task.id) || blockedRequesterNames.includes(person);
   const reported = reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]);
-  const messages = threadMessages[task.id] ?? getThreadSeed(task);
+  const { items: messages, server: serverThread } = resolveThread(task, threadMessages, collaboration, signedInUserId);
   const [safetyOpen, setSafetyOpen] = useState(false);
   const [safetyState, setSafetyState] = useState<"menu" | "reasons" | "reported" | "blocked">("menu");
   const [reason, setReason] = useState(reportReasons[task.id] ?? moderationHolds[task.id] ?? "Scope or safety concern");
   const [severity, setSeverity] = useState<"standard" | "urgent">("standard");
   const [evidenceNote, setEvidenceNote] = useState("");
   const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
   const [sentStatus, setSentStatus] = useState("");
   const isHistory = task.id.endsWith("-history");
   const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
-  const assigned = Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
+  const assigned = serverThread || Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
   const readOnlyReview = !isHistory && !assigned && (persona === "guardian" || persona === "youth");
   const recordOnly = isHistory || !participationReady;
   const composerLocked = blocked || readOnlyReview || recordOnly;
@@ -2711,8 +2825,24 @@ function MessageThread({ task }: { task: Task }) {
           ? [{ id: 1, text: "Guardian approved this exact scope and time. The youth participant still needs to accept the task." }]
           : [{ id: 1, text: "No assignment event has been recorded for this local task." }];
 
-  const send = () => {
-    if (!draft.trim() || composerLocked) return;
+  const send = async () => {
+    if (!draft.trim() || composerLocked || sending) return;
+    // A thread with a real counterpart goes to Supabase, and the realtime
+    // reload is what puts it on screen — writing it locally too would show the
+    // line twice and, worse, show it even when the insert was refused.
+    if (task.ownerId) {
+      setSending(true);
+      const result = await collaboration.sendMessage(task.id, draft.trim());
+      setSending(false);
+      if (!result.ok) {
+        setSentStatus(result.message ?? "We couldn't send that message.");
+        return;
+      }
+      setDraft("");
+      setSentStatus("Message sent.");
+      keyboard.hide();
+      return;
+    }
     const item = { id: Date.now(), mine: true, text: draft.trim() };
     setThreadMessages((current) => ({ ...current, [task.id]: [...(current[task.id] ?? getThreadSeed(task)), item] }));
     setDraft("");
@@ -2758,7 +2888,7 @@ function MessageThread({ task }: { task: Task }) {
       </MobileScroll>
       <div className="message-composer" data-blocked={composerLocked ? "true" : "false"} style={{ bottom: bottomInset }}>
         <KeyboardInput aria-label="Message" value={draft} disabled={composerLocked} onChange={(event) => setDraft(event.target.value)} onBlur={() => keyboard.hide()} placeholder={blocked ? "Messaging blocked" : readOnlyReview ? "Available after task acceptance" : isHistory ? "Completed task record" : !participationReady ? "Participation paused" : "Message about this task"} />
-        <button className="send-button" aria-label="Send message" disabled={composerLocked || !draft.trim()} onClick={send}><PaperPlaneTilt size={21} weight="fill" /></button>
+        <button className="send-button" aria-label="Send message" disabled={composerLocked || sending || !draft.trim()} onClick={() => { void send(); }}><PaperPlaneTilt size={21} weight="fill" /></button>
       </div>
       <BottomSheet open={safetyOpen} onOpenChange={setSafetyOpen} title={safetyState === "reported" ? "Report recorded" : safetyState === "blocked" ? `${person} blocked` : safetyState === "reasons" ? "Report this task" : "Safety options"} description={safetyState === "reported" ? reviewCopy : safetyState === "blocked" ? "Future direct contact is stopped in this local fixture." : reviewCopy} snap={safetyState === "reasons" ? 0.74 : 0.46}>
         {safetyState === "menu" ? <div className="sheet-form"><button className="choice-row danger-copy" onClick={() => setSafetyState("reasons")}><span><strong>Report this task</strong><small>Share the issue with support</small></span><ArrowRight size={18} /></button><button className="choice-row danger-copy" onClick={blockPerson}><span><strong>Block {person}</strong><small>Stop future direct contact</small></span><ArrowRight size={18} /></button><button className="secondary-button" onClick={() => setSafetyOpen(false)}>Cancel</button></div> : null}
@@ -2845,7 +2975,9 @@ function ProfileScreen() {
     <><MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded profile-page">
         <PageTitle title="Profile" />
-        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
+        {/* The photo you chose belongs on your own profile, not only on a map
+            pin, and the card is where anyone would tap to change it. */}
+        <section className="profile-card"><button className="profile-avatar-button" aria-label={profilePhoto ? "Change your profile photo" : "Add a profile photo"} onClick={() => setPhotoOpen(true)}>{profilePhoto ? <PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Your profile photo" /> : <span className="avatar large">{profile.initials}</span>}<span className="profile-avatar-edit" aria-hidden="true"><Camera size={13} weight="fill" /></span></button><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
         <section className="settings-group">
@@ -2865,10 +2997,10 @@ function ProfileScreen() {
         </section>
         {!isLiveAccount ? <section className="settings-group"><h2>Participation fixtures</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section> : null}
         <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
-        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
+        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Profile photo</strong><small>{profilePhoto ? "Photo selected" : "Default person icon"} · your profile and map marker</small></span><ArrowRight size={18} /></button></section>
         {isLiveAccount ? <section className="settings-group destructive-settings-group"><h2>Account controls</h2><button className="settings-row delete-account-row" onClick={() => flow.push(makeDeleteAccountScreen())}><span className="settings-icon"><Trash size={21} weight="bold" /></span><span><strong>Delete account</strong><small>Permanently remove your sign-in and Micro profile</small></span><ArrowRight size={18} /></button></section> : null}
         <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Connected account" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account, organization access, published task listings, and their private addresses. Map markers, messages, payments, moderation, and notifications remain preview fixtures." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
-      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
+      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your profile photo" description="Optional and local to this browser session." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="profile-photo-heading"><h2 id="profile-photo-heading" className="sr-only">Profile photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Profile photo preview" /></div><div><strong>{profilePhoto ? "Photo selected" : "Use the default person icon"}</strong><p>Shown on your profile, your own map marker, and tasks you post. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
 }
 

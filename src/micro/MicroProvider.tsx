@@ -4,6 +4,7 @@ import { supabase } from "../supabase";
 import { categoryById } from "../taskCatalog";
 import { initialsFromName, useAuth } from "./AuthProvider";
 import { areaIdFromServiceArea, type AreaId } from "./geo";
+import { useCollaboration, type CollaborationState } from "./collaboration";
 import { initialPostDraft, tasks } from "./fixtures";
 import { type CommunityStage, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./types";
 
@@ -33,6 +34,8 @@ export type MicroContextValue = {
   remoteTasks: Task[];
   remoteTasksError: string | null;
   refreshRemoteTasks: () => Promise<void>;
+  /** Acceptances and task threads shared with the other side, live from Supabase. */
+  collaboration: CollaborationState;
   setOwnedTasks: Dispatch<SetStateAction<Task[]>>;
   postDraft: PostDraft;
   setPostDraft: Dispatch<SetStateAction<PostDraft>>;
@@ -145,6 +148,11 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   }, [signedInUserId]);
 
   useEffect(() => { void refreshRemoteTasks(); }, [refreshRemoteTasks]);
+  const collaboration = useCollaboration(signedInUserId, auth.session?.access_token ?? null);
+  // An acceptance can arrive for a listing this device has never loaded, so a
+  // new assignment is also a reason to re-read the listings behind it.
+  const assignmentCount = collaboration.assignments.length;
+  useEffect(() => { if (assignmentCount) void refreshRemoteTasks(); }, [assignmentCount, refreshRemoteTasks]);
   const [postDraft, setPostDraft] = useState<PostDraft>(initialPostDraft);
   const [acceptedTaskIds, setAcceptedTaskIds] = useState<string[]>([]);
   const [closedTaskIds, setClosedTaskIds] = useState<string[]>([]);
@@ -248,6 +256,7 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       remoteTasks,
       remoteTasksError,
       refreshRemoteTasks,
+      collaboration,
       postDraft,
       setPostDraft,
       acceptedTaskIds,
@@ -313,7 +322,7 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, collaboration, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
