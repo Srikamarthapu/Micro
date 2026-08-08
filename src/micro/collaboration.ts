@@ -246,6 +246,23 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const { error: acceptError } = await supabase.rpc("accept_task", { p_task_id: taskId });
     if (acceptError) return collaborationFailure(acceptError);
+    // A thread that opens empty makes the requester wait for a stranger to
+    // speak first. The helper's name and intent is the one message that is
+    // always true at this moment, so the match sends it for them.
+    const { data: fresh } = await supabase
+      .from("task_assignment_details")
+      .select("id, helper_name")
+      .eq("task_id", taskId)
+      .eq("helper_id", userId)
+      .eq("status", "accepted")
+      .maybeSingle();
+    if (fresh?.id) {
+      const helperName = String(fresh.helper_name ?? "").trim();
+      const greeting = helperName ? `Hi, my name is ${helperName} and I'll be helping with this task.` : "Hi — I'll be helping with this task.";
+      // Best effort: a greeting that fails to send must never make a
+      // successful acceptance look like it failed.
+      await supabase.from("task_messages").insert({ assignment_id: String(fresh.id), client_nonce: crypto.randomUUID(), body: greeting });
+    }
     await refresh();
     return { ok: true };
   }, [refresh, userId]);

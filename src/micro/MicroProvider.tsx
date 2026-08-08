@@ -100,6 +100,9 @@ export type MicroContextValue = {
   /** Jobs refused from task details; they stop generating notices entirely. */
   refusedJobIds: string[];
   setRefusedJobIds: Dispatch<SetStateAction<string[]>>;
+  /** Threads cleared from this device's Messages list. */
+  hiddenThreadIds: string[];
+  setHiddenThreadIds: Dispatch<SetStateAction<string[]>>;
   /**
    * Listings of your own you are standing in front of as if a neighbor had
    * posted them. Prototype-only: without a second account there is no other way
@@ -246,7 +249,47 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   // Deliberately outside the persona snapshots: "already read" is session UI
   // state, not part of a seeded persona fixture.
   const [seenSpecialJobIds, setSeenSpecialJobIds] = useState<string[]>([]);
-  const [refusedJobIds, setRefusedJobIds] = useState<string[]>([]);
+  // Refusing a job is a decision about that job, not about this page load, so
+  // it outlives a refresh the way the read markers above do. Keyed per account
+  // so one neighbor's refusals never suppress another's list.
+  const refusedStorageKey = auth.session?.user.id ? `micro-refused-jobs-${auth.session.user.id}` : "micro-refused-jobs-demo";
+  const [refusedJobIds, setRefusedJobIdsState] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(refusedStorageKey);
+      setRefusedJobIdsState(stored ? (JSON.parse(stored) as string[]) : []);
+    } catch {
+      setRefusedJobIdsState([]);
+    }
+  }, [refusedStorageKey]);
+  // Threads you have cleared from your own list. Local by design: the other
+  // participant keeps their copy, and a completed thread stays a retained
+  // record on the server either way.
+  const hiddenThreadStorageKey = auth.session?.user.id ? `micro-hidden-threads-${auth.session.user.id}` : "micro-hidden-threads-demo";
+  const [hiddenThreadIds, setHiddenThreadIdsState] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(hiddenThreadStorageKey);
+      setHiddenThreadIdsState(stored ? (JSON.parse(stored) as string[]) : []);
+    } catch {
+      setHiddenThreadIdsState([]);
+    }
+  }, [hiddenThreadStorageKey]);
+  const setHiddenThreadIds = useCallback<Dispatch<SetStateAction<string[]>>>((value) => {
+    setHiddenThreadIdsState((current) => {
+      const next = typeof value === "function" ? (value as (previous: string[]) => string[])(current) : value;
+      try { window.localStorage.setItem(hiddenThreadStorageKey, JSON.stringify(next)); } catch { /* keep going */ }
+      return next;
+    });
+  }, [hiddenThreadStorageKey]);
+
+  const setRefusedJobIds = useCallback<Dispatch<SetStateAction<string[]>>>((value) => {
+    setRefusedJobIdsState((current) => {
+      const next = typeof value === "function" ? (value as (previous: string[]) => string[])(current) : value;
+      try { window.localStorage.setItem(refusedStorageKey, JSON.stringify(next)); } catch { /* keep going */ }
+      return next;
+    });
+  }, [refusedStorageKey]);
   const [neighborPreviewIds, setNeighborPreviewIds] = useState<string[]>([]);
   const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
   // The chosen photo is browser-local by design — nothing is uploaded — but it
@@ -442,6 +485,8 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       setSeenSpecialJobIds,
       refusedJobIds,
       setRefusedJobIds,
+      hiddenThreadIds,
+      setHiddenThreadIds,
       neighborPreviewIds,
       setNeighborPreviewIds,
       profileAreaId,

@@ -95,7 +95,51 @@ const rootScreen: FlowScreen = {
 };
 
 export default function Prototype() {
-  return <AuthProvider><AuthBoundary /><div className="app-status-scrim" aria-hidden="true" /></AuthProvider>;
+  return <AuthProvider><AuthBoundary /><NumericKeypad /><div className="app-status-scrim" aria-hidden="true" /></AuthProvider>;
+}
+
+/** A field that only ever takes digits: a PIN, a completion code, an amount. */
+function digitsOnlyField(element: HTMLElement | null): element is HTMLInputElement {
+  if (!(element instanceof HTMLInputElement)) return false;
+  return /^(numeric|tel|decimal)$/.test(element.inputMode || "") || element.type === "tel";
+}
+
+/**
+ * The runtime's keyboard is a picture of a QWERTY layout, which is fine when
+ * the phone frame is only scenery. A digit field is different: there is nothing
+ * to spell, and in a demo driven by a mouse the keys have to actually work. So
+ * this pad covers the image whenever the focused field takes digits. The
+ * runtime is locked, so it is an app-side overlay rather than a change there.
+ */
+function NumericKeypad() {
+  const keyboard = useKeyboard();
+  const target = keyboard.focusedElement;
+  if (!keyboard.visible || !digitsOnlyField(target)) return null;
+
+  const press = (key: string) => {
+    const limit = target.maxLength > 0 ? target.maxLength : Infinity;
+    const next = key === "back"
+      ? target.value.slice(0, -1)
+      : target.value.length >= limit ? target.value : target.value + key;
+    // React owns this input's value, so the change has to go through the
+    // native setter or its onChange never runs.
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(target, next);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  // Pointer-down default is prevented so tapping a key never blurs the field
+  // the digits are going into.
+  const key = (label: string, onPress: () => void, className?: string, ariaLabel?: string) => (
+    <button key={label} type="button" className={className} aria-label={ariaLabel} onPointerDown={(event) => event.preventDefault()} onClick={onPress}>{label}</button>
+  );
+
+  return (
+    <div className="numeric-keypad" style={{ height: keyboard.fullHeight }} role="group" aria-label="Number keyboard">
+      {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => key(digit, () => press(digit)))}
+      {key("Done", keyboard.hide, "keypad-muted")}
+      {key("0", () => press("0"))}
+      {key("⌫", () => press("back"), "keypad-muted", "Delete")}
+    </div>
+  );
 }
 
 function AuthBoundary() {
@@ -858,7 +902,13 @@ function NearbyScreen() {
     const timer = window.setInterval(() => setBrowsedAt(new Date()), 15000);
     return () => window.clearInterval(timer);
   }, []);
-  const [radius, setRadius] = useState<1 | 3>(3);
+  // "area" means the whole selected area, which is the only default that can
+  // show every listing in it: the server scatters a task's public marker across
+  // the area's own span — up to ~4.4 mi from the centre of Oakland & Alameda —
+  // so a fixed 3-mile default silently hid real listings from everyone, their
+  // owner included. 1 and 3 stay as deliberate narrowing.
+  const [radius, setRadius] = useState<1 | 3 | "area">("area");
+  const radiusMiles = radius === "area" ? activeArea.spanMi : radius;
   const [youthOnly, setYouthOnly] = useState(false);
   const [sheetSnap, setSheetSnap] = useState<"open" | "peek">("open");
   const [sheetOpenHeight, setSheetOpenHeight] = useState(404);
@@ -891,7 +941,7 @@ function NearbyScreen() {
       (mode === "all" || task.mode === mode) &&
       (!categories.length || (task.category ? categories.includes(task.category) : false)) &&
       (areaId === "all" || task.areaId === areaId) &&
-      distanceMiles(activeArea.center, task.coords) <= radius &&
+      distanceMiles(activeArea.center, task.coords) <= radiusMiles &&
       (when === "any" || (when === "today" ? task.time.startsWith("Today") : Boolean(task.startsAt && (task.startsAt.getDay() === 0 || task.startsAt.getDay() === 6)))) &&
       (!youthOnly || task.youthEligible) &&
       `${task.title} ${task.area}`.toLowerCase().includes(search.trim().toLowerCase()),
@@ -901,7 +951,7 @@ function NearbyScreen() {
   // Notifications marks them read, so it goes quiet until a new one appears.
   const unreadSpecialJobs = notificationsEnabled ? specialJobsFor(allTasks, persona, areaId, refusedJobIds, auth.session?.user.id).filter((task) => !seenSpecialJobIds.includes(task.id)) : [];
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
-  const activeFilterCount = Number(mode !== "all") + categories.length + Number(when !== "any") + Number(radius !== 3) + Number(youthOnly);
+  const activeFilterCount = Number(mode !== "all") + categories.length + Number(when !== "any") + Number(radius !== "area") + Number(youthOnly);
   const browsingTasks = primaryVisibleTask
     ? [primaryVisibleTask, ...allTasks.filter((task) => visibleIds.has(task.id) && task.id !== primaryVisibleTask.id)]
     : allTasks.filter((task) => visibleIds.has(task.id));
@@ -1112,7 +1162,7 @@ function NearbyScreen() {
                       {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />)}
                     </div>
                   ) : (
-                    <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
+                    <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius("area"); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
                   )}
                 </div>
               </MobileScroll>
@@ -1132,7 +1182,7 @@ function NearbyScreen() {
             {catalogCategories.map((entry) => { const picked = categories.includes(entry.label); return <button key={entry.label} aria-pressed={picked} data-active={picked ? "true" : "false"} onClick={() => setCategories((current) => picked ? current.filter((item) => item !== entry.label) : [...current, entry.label])}>{picked ? <Check size={13} weight="bold" aria-hidden="true" /> : null}{entry.label}</button>; })}
           </div></fieldset>
           <fieldset className="choice-fieldset inline-filter-fieldset"><legend>When</legend><div className="segmented-row">{(["any", "today", "weekend"] as const).map((value) => <button key={value} aria-pressed={when === value} data-active={when === value ? "true" : "false"} onClick={() => setWhen(value)}>{value === "any" ? "Any time" : value === "today" ? "Today" : "Weekend"}</button>)}</div></fieldset>
-          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Distance</legend><div className="segmented-row two-segments">{([1, 3] as const).map((value) => <button key={value} aria-pressed={radius === value} data-active={radius === value ? "true" : "false"} onClick={() => setRadius(value)}>Within {value} mi</button>)}</div></fieldset>
+          <fieldset className="choice-fieldset inline-filter-fieldset"><legend>Distance</legend><div className="segmented-row">{(["area", 1, 3] as const).map((value) => <button key={value} aria-pressed={radius === value} data-active={radius === value ? "true" : "false"} onClick={() => setRadius(value)}>{value === "area" ? "Whole area" : `Within ${value} mi`}</button>)}</div></fieldset>
           <button className="choice-row" aria-pressed={youthOnly} data-selected={youthOnly ? "true" : "false"} onClick={() => setYouthOnly((current) => !current)}><span><strong>Youth-eligible only</strong><small>Guardian approval is still task-specific</small></span><span className="checkbox">{youthOnly ? <Check size={14} weight="bold" /> : null}</span></button>
           {refusedJobIds.length ? <button className="choice-row" onClick={() => setRefusedJobIds([])}><span><strong>Refused jobs</strong><small>{refusedJobIds.length} hidden from this list and from notifications</small></span><span className="settings-status">Restore all</span></button> : null}
           <div className="info-strip"><MapPin size={18} /> Within about {radius} {radius === 1 ? "mile" : "miles"} of {activeArea.label}</div>
@@ -3393,7 +3443,7 @@ function formatMessageDate(value: string) {
 function MessagesScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, collaboration, remoteTasks, ownedTasks, threadReadAt, markThreadRead } = useMicro();
+  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, collaboration, remoteTasks, ownedTasks, threadReadAt, markThreadRead, hiddenThreadIds, setHiddenThreadIds } = useMicro();
   const signedInUserId = auth.session?.user.id ?? null;
   // Every server assignment is its own conversation, including settled history
   // and rematches on the same task. The task is display context only; assignment
@@ -3434,6 +3484,10 @@ function MessagesScreen() {
   const threadDescriptors = Array.from(new Map(
     (participationReady ? inScope : recordsWhilePaused).map((descriptor) => [descriptor.key, descriptor]),
   ).values());
+  // Cleared threads leave this list only. The record itself is untouched, so
+  // "Show cleared" always brings them back.
+  const visibleThreads = threadDescriptors.filter((descriptor) => !hiddenThreadIds.includes(descriptor.key));
+  const clearedCount = threadDescriptors.length - visibleThreads.length;
 
   return (
     <MobileScroll className="app-screen tab-scroll">
@@ -3444,8 +3498,8 @@ function MessagesScreen() {
         {!participationReady && threadDescriptors.length ? <div className="persona-scope-note" role="status"><Info size={18} weight="fill" /><span>Participation is paused. Existing task records stay visible, but sending is disabled until Profile requirements are restored.</span></div> : null}
         {persona !== "adult" ? <div className="persona-scope-note"><ShieldCheck size={18} weight="fill" /><span>{persona === "youth" ? "Only task-specific, Youth Mode eligible threads are shown." : "Guardian view only shows the youth task under review."}</span></div> : null}
         <section className="thread-list" aria-label="Task messages">
-          {auth.session && !auth.demoMode ? <div className="section-heading"><h2>Task threads</h2><span>{threadDescriptors.length}</span></div> : null}
-          {threadDescriptors.map(({ key, task, assignment }, index) => {
+          {auth.session && !auth.demoMode ? <div className="section-heading"><h2>Task threads</h2><span>{visibleThreads.length}</span></div> : null}
+          {visibleThreads.map(({ key, task, assignment }, index) => {
             const detail = getTaskDetails(task);
             const { items: messages, server } = resolveThread(task, assignment, threadMessages, collaboration, signedInUserId);
             const other = counterpartName(assignment, signedInUserId) ?? detail.requester;
@@ -3481,9 +3535,10 @@ function MessagesScreen() {
             const metadata = server
               ? settled ? `${serverStatus} · read-only · Retained` : `Live · ${task.time}`
               : `${auth.session ? "Preview · local only" : modeMeta[task.mode].label} · ${blocked ? "Blocked" : reported ? "In review" : reviewOnly ? "Not assigned" : task.time}`;
-            return <button key={key} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => { if (!assignment) markThreadRead(key); flow.push(makeMessageScreen(task, other, assignment)); }}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unreadCount ? <span className="thread-unread-count" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`}>{unreadCount > 9 ? "9+" : unreadCount}</span> : null}</button>;
+            return <div key={key} className="thread-row-wrap"><button className={`thread-row ${unread ? "unread" : ""}`} onClick={() => { if (!assignment) markThreadRead(key); flow.push(makeMessageScreen(task, other, assignment)); }}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unreadCount ? <span className="thread-unread-count" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`}>{unreadCount > 9 ? "9+" : unreadCount}</span> : null}</button><button className="thread-clear" aria-label={`Clear ${task.title} from this list`} onClick={() => setHiddenThreadIds((current) => current.includes(key) ? current : [...current, key])}><Trash size={16} weight="bold" aria-hidden="true" /></button></div>;
           })}
           {!threadDescriptors.length ? <div className="empty-state message-empty" role={collaboration.loading ? "status" : undefined}><ShieldCheck size={34} weight="duotone" /><h2>{collaboration.loading ? "Loading protected threads…" : participationReady ? "No task threads yet." : "Participation is paused."}</h2><p>{collaboration.loading ? "Micro is checking the assignments this account may read." : participationReady ? "Accept an eligible task or request a guardian review to start a protected thread." : "Update the age, terms, or guardian link in Profile before messaging."}</p></div> : null}
+          {clearedCount ? <button className="history-toggle" onClick={() => setHiddenThreadIds([])}>Show {clearedCount} cleared {clearedCount === 1 ? "thread" : "threads"}</button> : null}
         </section>
       </div>
     </MobileScroll>
