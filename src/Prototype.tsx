@@ -80,7 +80,7 @@ import {
   type TaskTemplate,
 } from "./taskCatalog";
 import { supabase } from "./supabase";
-import { areaById, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
+import { areaById, areaForPoint, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, readDeviceLocation, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
 import { agoLabel, arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
 import { liveAssignmentFor, type CollaborationState } from "./micro/collaboration";
 import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
@@ -1543,12 +1543,12 @@ function PostScreen() {
   const keyboard = useKeyboard();
   const auth = useAuth();
   const { setPostedTask, setOwnedTasks, setSelectedTaskId, setActiveTab, postDraft, setPostDraft, accessTermsAccepted, persona, youthAge, guardianLinked, profileAreaId, profilePhotos, ownedTasks, refreshRemoteTasks } = useMicro();
-  const listingArea = areaById(profileAreaId);
-  const profileArea = listingArea.label;
   const [step, setStep] = useState(0);
   const [published, setPublished] = useState(false);
   // Step 3 reviews the full listing, so the scope rows start folded here.
   const [scopeOpen, setScopeOpen] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -1556,7 +1556,11 @@ function PostScreen() {
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedTimeRef = useRef<HTMLButtonElement>(null);
   const [composingCustom, setComposingCustom] = useState(false);
-  const { mode, templateId, selections, customTitle, customDetails, customCategoryId, customMinutes, customCompletionId, dateChoice, startTime, privateAddress, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
+  const { mode, templateId, selections, customTitle, customDetails, customCategoryId, customMinutes, customCompletionId, dateChoice, startTime, privateAddress, coords, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
+  // A shared location names its own neighborhood; without one the listing falls
+  // back to the approximate area set in Profile.
+  const listingArea = (coords && areaForPoint(coords)) ?? areaById(profileAreaId);
+  const profileArea = listingArea.label;
   function setField<K extends keyof PostDraft>(key: K, value: SetStateAction<PostDraft[K]>) {
     setPostDraft((current) => ({ ...current, [key]: typeof value === "function" ? (value as (previous: PostDraft[K]) => PostDraft[K])(current[key]) : value }));
   }
@@ -1687,7 +1691,10 @@ function PostScreen() {
       description: listing.details,
       mode,
       earning: mode === "community" ? undefined : numericAmount,
-      coords: {
+      // A shared location is the real spot. Without one the listing is placed
+      // near the area centre, which is a stand-in, not a claim about where the
+      // task is. Either way the public map only ever draws the blurred area.
+      coords: coords ?? {
         lat: listingArea.center.lat + Math.sin(ownedTasks.length * 2.4) * 0.004,
         lng: listingArea.center.lng + Math.cos(ownedTasks.length * 2.4) * 0.004,
       },
@@ -1921,16 +1928,20 @@ function PostScreen() {
                 rather than as two more tiles under it. The scope rows stay
                 folded: they are the whole of step 3, and repeating them in full
                 here is what made this step a wall. */}
+            {/* `composeListing` always returns the template's own title, which
+                the route header is already showing, so it is not repeated. */}
             <section className="composed-listing">
               <p className="eyebrow">What neighbors will read</p>
-              <h3>{listing.title}</h3>
               <p>{listing.details}</p>
               <p className="composed-meta">{listing.duration} · suggested ${listing.suggestedPay}</p>
               <button className="history-toggle" aria-expanded={scopeOpen} onClick={() => setScopeOpen((current) => !current)}>{scopeOpen ? "Hide scope" : "See included, excluded, and completion"}<CaretDown size={16} weight="bold" aria-hidden="true" /></button>
               {scopeOpen ? <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /></div> : null}
             </section>
             <button className="choice-row risk-confirm" aria-pressed={riskConfirmed} data-selected={riskConfirmed ? "true" : "false"} onClick={() => { keyboard.hide(); setRiskConfirmed((current) => !current); }}><span><strong>{template.category} safety boundary</strong><small>{template.boundary}</small></span><span className="checkbox">{riskConfirmed ? <Check size={14} weight="bold" /> : null}</span></button>
-            <div className="photo-upload-block"><div><strong>Optional task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div>{photoPreview ? <figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure> : <label className="photo-upload-button"><Plus size={18} weight="bold" /> Choose photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}</div>
+            {/* Most tasks are posted without a photo, so the card that explains
+                how to take a privacy-safe one waits until it is asked for. */}
+            {photoPreview ? <div className="photo-upload-block"><div><strong>Task photo</strong><span>Show the work area without revealing a face, plate, code, document, or address marker.</span></div><figure className="post-photo-preview"><img src={photoPreview} alt="Selected privacy-safe task preview" /><button className="text-button" onClick={() => setPhotoPreview("")}>Remove photo</button></figure></div>
+              : <label className="photo-add-row"><Plus size={17} weight="bold" aria-hidden="true" /> Add an optional photo<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setPhotoPreview(typeof reader.result === "string" ? reader.result : ""); reader.readAsDataURL(file); }} /></label>}
             {/* Only a chosen photo needs acknowledging (`scopeValid`), so the
                 guidance appears with one instead of standing in the way of
                 everyone who never adds a photo at all. */}
@@ -1970,6 +1981,28 @@ function PostScreen() {
             </Carousel>
             <div className="derived-facts"><div><span>Duration</span><strong>{listing.duration}</strong></div><div><span>Set by</span><strong>The task you picked</strong></div></div>
             <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
+            {/* The address tells a matched helper which door; the device
+                location tells the map which neighborhood. Optional, because a
+                task is often not where the requester is standing. */}
+            <div className="location-share" data-located={coords ? "true" : "false"}>
+              <span className="location-share-icon"><MapPin size={20} weight="fill" aria-hidden="true" /></span>
+              <div>
+                <strong>{coords ? `Location shared · ${listingArea.label}` : "Use my current location"}</strong>
+                <small>{coords ? "Neighbors still see only the approximate area, never this point." : "Places the task on the map near where you are. Optional — the area from your profile is used otherwise."}</small>
+              </div>
+              <button className="secondary-button" disabled={locating} onClick={async () => {
+                keyboard.hide();
+                setLocating(true);
+                setLocationError("");
+                const { point, error } = await readDeviceLocation();
+                setLocating(false);
+                if (!point) { setLocationError(error ?? "Your location could not be read."); return; }
+                if (!areaForPoint(point)) { setLocationError("You are outside the demo neighborhoods, so the profile area is used instead."); return; }
+                setField("coords", point);
+              }}>{locating ? "Locating…" : coords ? "Update" : "Share location"}</button>
+            </div>
+            {coords ? <button className="text-button" onClick={() => setField("coords", undefined)}>Use my profile area instead</button> : null}
+            {locationError ? <p className="form-error" role="status">{locationError}</p> : null}
             <div className="privacy-choice"><div><span className="mini-label">Shown publicly</span><strong>{profileArea}</strong><small>Approximate neighborhood only · private after match: {privateAddress || "Address required"}</small></div><ShieldCheck size={23} weight="fill" /></div>
             {mode !== "community" ? <label className="field-label-block">Helper receives<div className="money-field"><CurrencyDollar size={21} /><KeyboardInput value={amount} inputMode="numeric" onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))} onBlur={() => keyboard.hide()} /></div>{numericAmount !== listing.suggestedPay ? <button className="text-button" onClick={() => { keyboard.hide(); setAmount(String(listing.suggestedPay)); }}>Use the suggested ${listing.suggestedPay}</button> : null}</label> : <div className="notice-card"><HandHeart size={22} /><div><strong>Volunteer — no payment</strong><span>This task will never display an earning amount.</span></div></div>}
             <div className="fair-pay-card"><ShieldCheck size={22} weight="fill" /><div><strong>{mode === "community" ? "Clear time commitment" : `~$${hourlyEquivalent}/hour equivalent`}</strong><span>{mode === "sponsored" ? "Sponsor pays; recipient total is $0." : mode === "paid" ? `Helper earnings are shown before they accept. This task suggests $${listing.suggestedPay} for its scope; the prototype minimum is $15.` : "Scope and duration remain visible before a volunteer commits."}</span></div></div>

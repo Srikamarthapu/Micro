@@ -43,6 +43,40 @@ export function areaIdFromServiceArea(value?: string | null): AreaId {
   return areas.find((area) => area.id === normalized || area.label.toLowerCase() === normalized)?.id ?? "all";
 }
 
+/**
+ * The launch area a real coordinate falls in, or undefined when it is outside
+ * every one of them. "all" is skipped: it is the whole-region framing rather
+ * than a neighborhood, so it would swallow every point in Oakland.
+ */
+export function areaForPoint(point: LatLng): MicroArea | undefined {
+  return areas
+    .filter((area) => area.id !== "all")
+    .map((area) => ({ area, miles: distanceMiles(area.center, point) }))
+    .filter(({ area, miles }) => miles <= area.spanMi)
+    .sort((first, second) => first.miles - second.miles)[0]?.area;
+}
+
+/**
+ * Ask the device where it is. Wrapped so the callers deal in one promise and
+ * one plain-language failure instead of the callback API and its error codes.
+ */
+export function readDeviceLocation(): Promise<{ point?: LatLng; error?: string }> {
+  if (!navigator.geolocation) return Promise.resolve({ error: "This browser cannot share a location." });
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({ point: { lat: position.coords.latitude, lng: position.coords.longitude } }),
+      (error) => resolve({
+        error: error.code === error.PERMISSION_DENIED
+          ? "Location permission was declined. Your approximate area is used instead."
+          : error.code === error.TIMEOUT
+            ? "Finding your location took too long. Your approximate area is used instead."
+            : "Your location could not be read. Your approximate area is used instead.",
+      }),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+    );
+  });
+}
+
 export function distanceMiles(from: LatLng, to: LatLng) {
   const earthRadiusMiles = 3958.8;
   const toRadians = (degrees: number) => (degrees * Math.PI) / 180;

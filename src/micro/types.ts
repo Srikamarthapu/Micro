@@ -142,6 +142,12 @@ export type PostDraft = {
   dateChoice: string;
   startTime: string;
   privateAddress: string;
+  /**
+   * Where the device says the task is. Optional: a listing can still be posted
+   * from the profile's approximate area, which is what happens when location is
+   * declined or unavailable.
+   */
+  coords?: LatLng;
   amount: string;
   photoAcknowledged: boolean;
   photoPreview: string;
