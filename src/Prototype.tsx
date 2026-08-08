@@ -720,8 +720,25 @@ function MicroShell() {
   );
 }
 
+/** Messages from the other side that arrived after you last opened that thread. */
+function useUnreadMessageCount() {
+  const auth = useAuth();
+  const { collaboration, threadReadAt } = useMicro();
+  const myId = auth.session?.user.id ?? null;
+  return useMemo(() => {
+    let total = 0;
+    // Keys match the thread list exactly, so the badge and the row agree.
+    for (const [assignmentId, messages] of Object.entries(collaboration.messagesByAssignment)) {
+      const readAt = threadReadAt[`assignment-${assignmentId}`] ?? 0;
+      total += messages.filter((m) => m.kind === "human" && m.senderId !== myId && Date.parse(m.createdAt) > readAt).length;
+    }
+    return total;
+  }, [collaboration.messagesByAssignment, myId, threadReadAt]);
+}
+
 function BottomNav() {
   const { activeTab, setActiveTab } = useMicro();
+  const unreadMessages = useUnreadMessageCount();
   const keyboard = useKeyboard();
   const reduceMotion = useReducedMotion();
   // Activity lives inside Profile now, so it keeps Profile lit while it is open
@@ -744,7 +761,7 @@ function BottomNav() {
               className="nav-item"
               data-active={isActive ? "true" : "false"}
               aria-current={isActive ? "page" : undefined}
-              aria-label={label}
+              aria-label={id === "messages" && unreadMessages ? `${label}, ${unreadMessages} unread ${unreadMessages === 1 ? "message" : "messages"}` : label}
               onClick={() => {
                 keyboard.hide();
                 setActiveTab(id);
@@ -759,6 +776,7 @@ function BottomNav() {
                   aria-hidden="true"
                 />
               ) : null}
+              {id === "messages" && unreadMessages ? <span className="nav-unread" aria-hidden="true">{unreadMessages > 9 ? "9+" : unreadMessages}</span> : null}
               <motion.span
                 className="nav-icon-wrap"
                 animate={{ scale: isActive && !reduceMotion ? 1.06 : 1 }}
@@ -3127,7 +3145,7 @@ function formatMessageDate(value: string) {
 function MessagesScreen() {
   const flow = useFlow();
   const auth = useAuth();
-  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, collaboration, remoteTasks, ownedTasks } = useMicro();
+  const { activeTask, communityTask, persona, blockedThreadIds, blockedRequesterNames, reportedTaskIds, moderationHolds, threadMessages, acceptedTaskIds, acceptedTaskActors, taskEvents, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, collaboration, remoteTasks, ownedTasks, threadReadAt, markThreadRead } = useMicro();
   const signedInUserId = auth.session?.user.id ?? null;
   // Every server assignment is its own conversation, including settled history
   // and rematches on the same task. The task is display context only; assignment
@@ -3202,12 +3220,16 @@ function MessagesScreen() {
                       : assignment?.status === "withdrawn"
                         ? "Commitment ended · retained participant record"
                         : "Match confirmed · send the first task message";
-            const unread = participationReady && !settled && index === 0 && !blocked && !reviewOnly && Boolean(last && !last.mine);
+            const readAt = threadReadAt[key] ?? 0;
+            const unreadCount = participationReady && !settled && !blocked && !reviewOnly
+              ? messages.filter((m) => !m.mine && (m.createdAt ? Date.parse(m.createdAt) : Date.now()) > readAt).length
+              : 0;
+            const unread = unreadCount > 0;
             const serverStatus = assignment?.status === "completed" ? "Completed" : assignment?.status === "withdrawn" ? "Ended" : "Live";
             const metadata = server
               ? settled ? `${serverStatus} · read-only · Retained` : `Live · ${task.time}`
               : `${auth.session ? "Preview · local only" : modeMeta[task.mode].label} · ${blocked ? "Blocked" : reported ? "In review" : reviewOnly ? "Not assigned" : task.time}`;
-            return <button key={key} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => flow.push(makeMessageScreen(task, other, assignment))}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unread ? <span className="unread-dot" /> : null}</button>;
+            return <button key={key} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => { markThreadRead(key); flow.push(makeMessageScreen(task, other, assignment)); }}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unreadCount ? <span className="thread-unread-count" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`}>{unreadCount > 9 ? "9+" : unreadCount}</span> : null}</button>;
           })}
           {!threadDescriptors.length ? <div className="empty-state message-empty"><ShieldCheck size={34} weight="duotone" /><h2>{participationReady ? "No task threads yet." : "Participation is paused."}</h2><p>{participationReady ? "Accept an eligible task or request a guardian review to start a protected thread." : "Update the age, terms, or guardian link in Profile before messaging."}</p></div> : null}
         </section>
@@ -3218,8 +3240,7 @@ function MessagesScreen() {
 
 function makeMessageScreen(task: Task, counterpartName?: string, assignment: TaskAssignment | null = null): FlowScreen {
   const detail = getTaskDetails(task);
-  const title = task.title.length > 18 ? `${task.title.slice(0, 18)}…` : task.title;
-  return { id: `thread-${assignment?.id ?? task.id}`, headerHeight: 66, header: (flow) => <RouteHeader title={`${counterpartName ?? detail.requester} · ${title}`} onBack={flow.pop} right={<ShieldCheck size={21} weight="fill" aria-label="Protected task thread" />} />, render: () => <MessageThread task={task} assignment={assignment} /> };
+  return { id: `thread-${assignment?.id ?? task.id}`, headerHeight: 88, header: (flow) => <RouteHeader wrap title={`${counterpartName ?? detail.requester} · ${task.title}`} onBack={flow.pop} right={<ShieldCheck size={21} weight="fill" aria-label="Protected task thread" />} />, render: () => <MessageThread task={task} assignment={assignment} /> };
 }
 
 function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssignment | null }) {
@@ -3329,8 +3350,6 @@ function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssig
           <div className="message-date">{serverThread && messages[0]?.createdAt ? formatMessageDate(messages[0].createdAt) : "Today"}</div>
           {serverThread && !displayMessages.length ? <div className="empty-thread-prompt"><ChatCircle size={25} weight="duotone" /><strong>{isHistory ? "No messages in this retained thread." : "Start with the task."}</strong><span>{isHistory ? "The participant record remains separate from every later rematch." : "Confirm timing, scope, or arrival details without sharing sensitive information."}</span></div> : null}
           {displayMessages.map((message) => <div key={message.id} className="message-bubble" data-mine={message.mine ? "true" : "false"}>{message.text}<span>{message.createdAt ? formatMessageTime(message.createdAt) : message.mine ? "Sent" : "2:12 PM"}</span></div>)}
-          <div className="system-event quiet"><Info size={16} /> Keep communication and any task changes in this thread.</div>
-          {serverThread ? <div className="persona-scope-note live-thread-boundary"><ShieldCheck size={18} weight="fill" /><span>{isHistory ? "This Supabase thread is retained read-only under its original assignment ID." : "Live messages are stored in Supabase. Blocking, reports, and moderation are not connected yet."}</span></div> : <button className="report-link" onClick={openSafety}><Warning size={17} /> {blocked || reported ? "View safety status" : "Report or block"}</button>}
           {sendError ? <p className="form-error" role="alert">{sendError}</p> : null}
           <span className="sr-only" role="status" aria-live="polite">{sentStatus}</span>
         </div>
@@ -3630,10 +3649,10 @@ function DemoAccessScreen() {
   return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad"><p className="eyebrow">Seeded onboarding states</p><h1>Test access, clearly labeled.</h1><p className="lead">These controls model identity and consent screens without creating a real account.</p><section className="workflow-card"><div className="profile-preview access-profile"><span className="avatar">{persona === "youth" ? "SK" : persona === "guardian" ? "MK" : "AK"}</span><div><span className="mini-label">Local fixture</span><strong>{persona === "youth" ? "sam@micro.demo" : persona === "guardian" ? "maya@micro.demo" : "alex@micro.demo"}</strong><p>Email verified in test data only</p></div></div></section><fieldset className="persona-switch"><legend>Participation profile</legend><div className="segmented-row">{(["adult", "youth", "guardian"] as const).map((value) => <button key={value} aria-pressed={persona === value} data-active={persona === value ? "true" : "false"} onClick={() => setPersona(value)}>{value}</button>)}</div></fieldset>{persona === "youth" ? <fieldset className="persona-switch age-choice"><legend>Youth age fixture</legend><div className="segmented-row two-segments"><button aria-pressed={youthAge === 14} data-active={youthAge === 14 ? "true" : "false"} onClick={() => setAge(14)}>14 · not eligible</button><button aria-pressed={youthAge === 16} data-active={youthAge === 16 ? "true" : "false"} onClick={() => setAge(16)}>16 · eligible</button></div></fieldset> : null}<div className="access-status" data-ready={participationReady ? "true" : "false"} role="status"><ShieldCheck size={19} weight="fill" /><span><strong>{participationReady ? "Participation ready" : "Participation paused"}</strong>{participationReady ? "Required test-state checks are active." : "Resolve the age, terms, or guardian requirement below."}</span></div><section className="review-list"><ReviewRow icon={UserCircle} title="Age gate" text={`${age} fixture selected. Youth Mode is limited to ages 15–17; production verification is not connected.`} /><ReviewRow icon={ShieldCheck} title="Terms & community standards" text={accessTermsAccepted ? "Accepted in this local session." : "Acceptance required before participation."} /><ReviewRow icon={UsersThree} title="Guardian link" text={persona === "youth" ? guardianLinked ? "Maya K. is linked for task-specific approvals." : "A guardian must be linked before accepting youth tasks." : "Guardian linking applies only to Youth Mode."} /></section><button className="choice-row" aria-pressed={accessTermsAccepted} data-selected={accessTermsAccepted ? "true" : "false"} onClick={toggleTerms}><span><strong>I accept the test terms</strong><small>No real account or legal acceptance is created.</small></span><span className="checkbox">{accessTermsAccepted ? <Check size={14} weight="bold" /> : null}</span></button>{persona === "youth" ? <button className="choice-row" aria-pressed={guardianLinked} data-selected={guardianLinked ? "true" : "false"} onClick={toggleGuardian}><span><strong>Link Maya K. as guardian</strong><small>Local fixture only</small></span><span className="checkbox">{guardianLinked ? <Check size={14} weight="bold" /> : null}</span></button> : null}<div className="demo-card"><Info size={20} /><div><strong>Backend intentionally deferred</strong><span>Production auth, age verification, consent records, and guardian invitations need secure services later.</span></div></div></div></MobileScroll>;
 }
 
-function RouteHeader({ title, onBack, right }: { title: string; onBack: () => void; right?: ReactNode }) {
+function RouteHeader({ title, onBack, right, wrap = false }: { title: string; onBack: () => void; right?: ReactNode; wrap?: boolean }) {
   const titleRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => { titleRef.current?.focus(); }, []);
-  return <div className="route-header"><button className="icon-button" aria-label="Go back" onClick={onBack}><CaretLeft size={24} weight="bold" /></button><h1 ref={titleRef} tabIndex={-1}>{title}</h1><span className="header-action-slot">{right}</span></div>;
+  return <div className={`route-header${wrap ? " route-header-wrap" : ""}`}><button className="icon-button" aria-label="Go back" onClick={onBack}><CaretLeft size={24} weight="bold" /></button><h1 ref={titleRef} tabIndex={-1}>{title}</h1><span className="header-action-slot">{right}</span></div>;
 }
 
 function PageTitle({ eyebrow, title, subtitle }: { eyebrow?: string; title: string; subtitle?: string }) {

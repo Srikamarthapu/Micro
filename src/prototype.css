@@ -1313,6 +1313,40 @@
   color: var(--micro-teal-dark);
 }
 
+/* Unread count on the Messages tab, matching the notification ping. */
+.nav-unread {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 50%;
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  margin-right: -21px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #b3341f;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+}
+.thread-unread-count {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  place-items: center;
+  border-radius: 999px;
+  background: #b3341f;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1;
+}
+
 .notify-ping {
   position: absolute;
   top: 4px;
@@ -1948,6 +1982,10 @@
   background: rgba(255, 255, 255, 0.97);
 }
 .route-header > h1 { overflow: hidden; color: var(--micro-ink); font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
+/* A thread header names the whole job rather than its first few words, so it
+   wraps to a second line instead of trimming the title away. */
+.route-header-wrap { height: 88px; }
+.route-header-wrap > h1 { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 16px; line-height: 1.24; text-overflow: clip; white-space: normal; }
 .header-action-slot { color: var(--micro-teal); }
 
 .detail-hero { padding: 18px; border-radius: 21px; background: #f2f7fb; }

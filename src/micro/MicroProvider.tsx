@@ -91,6 +91,9 @@ export type MicroContextValue = {
   setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
   notificationsEnabled: boolean;
   setNotificationsEnabled: (enabled: boolean) => void;
+  /** When each thread was last opened, so unread counts survive a re-render. */
+  threadReadAt: Record<string, number>;
+  markThreadRead: (key: string) => void;
   /** Special jobs already read in Notifications, so the bell stops pinging for them. */
   seenSpecialJobIds: string[];
   setSeenSpecialJobIds: Dispatch<SetStateAction<string[]>>;
@@ -131,6 +134,10 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
   // Listings other neighbors published. Empty in demo mode, where there is no
   // account to attribute a post to and nothing to sync with.
+  const [threadReadAt, setThreadReadAt] = useState<Record<string, number>>({});
+  const markThreadRead = useCallback((key: string) => {
+    setThreadReadAt((current) => ({ ...current, [key]: Date.now() }));
+  }, []);
   const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
   const [remoteTasksLoaded, setRemoteTasksLoaded] = useState(false);
   const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
@@ -367,6 +374,8 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       setPostedTask,
       ownedTasks,
       setOwnedTasks,
+      threadReadAt,
+      markThreadRead,
       remoteTasks,
       remoteTasksLoaded,
       remoteTasksError,
@@ -437,7 +446,7 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, collaboration, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, remoteTasksLoaded, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, collaboration, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, markThreadRead, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, remoteTasksLoaded, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, threadReadAt, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
