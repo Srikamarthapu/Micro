@@ -557,8 +557,8 @@
 .catalog-row > svg:last-child { color: #a7b4c2; }
 .catalog-row-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: var(--micro-paper-deep); color: var(--micro-teal); }
 .catalog-row-body { display: grid; gap: 2px; }
-.catalog-row-body strong { font-size: 15px; line-height: 1.2; }
-.catalog-row-body small { color: var(--micro-ink-soft); font-size: 11px; }
+.catalog-row-body strong { font-size: 16px; line-height: 1.2; }
+.catalog-row-body small { color: var(--micro-ink-soft); font-size: 12px; }
 .catalog-row-flag { padding: 3px 7px; border-radius: 8px; background: #e8f1fc; color: var(--micro-blue); white-space: nowrap; font-size: 10px; font-weight: 800; }
 .catalog-empty { padding: 26px 18px; }
 .section-label-value { color: var(--micro-teal-dark); }
@@ -583,6 +583,25 @@
 .chosen-task-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 13px; background: #fffdfa; color: var(--micro-teal); }
 .chosen-task strong { display: block; font-size: 15px; line-height: 1.2; }
 .chosen-task small { display: none; }
+.post-composer-page[data-task-selected="true"] .chosen-task strong { font-size: 16px; }
+.post-composer-page[data-task-selected="true"] .catalog-intro { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .choice-fieldset legend,
+.post-composer-page[data-task-selected="true"] .field-label-block,
+.post-composer-page[data-task-selected="true"] .section-label { font-size: 14px; }
+.post-composer-page[data-task-selected="true"] .compact-choice-fieldset .segmented-row button { font-size: 13px; }
+.post-composer-page[data-task-selected="true"] .time-chip { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .composed-listing > p:not(.eyebrow) { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .composed-listing > p.composed-meta { font-size: 13px; }
+.post-composer-page[data-task-selected="true"] .choice-row strong { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .choice-row small { font-size: 13px; }
+.post-composer-page[data-task-selected="true"] .photo-add-row { font-size: 14px; }
+.post-composer-page[data-task-selected="true"] .photo-upload-block > div > span { font-size: 13px; }
+.post-composer-page[data-task-selected="true"] .location-share strong { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .location-share small,
+.post-composer-page[data-task-selected="true"] .privacy-choice small { font-size: 12px; }
+.post-composer-page[data-task-selected="true"] .privacy-choice strong { font-size: 15px; }
+.post-composer-page[data-task-selected="true"] .fair-pay-card span,
+.post-composer-page[data-task-selected="true"] .notice-card span { font-size: 14px; }
 .standard-page.activity-page { padding-top: 148px; }
 .activity-toolbar {
   position: absolute;
@@ -1044,11 +1063,11 @@
 .thread-row { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; min-height: 92px; align-items: center; padding: 13px 0; border: 0; border-bottom: 1px solid var(--micro-line); background: transparent; color: var(--micro-ink); text-align: left; }
 .thread-copy { min-width: 0; }
 .thread-copy > span { display: flex; justify-content: space-between; gap: 10px; }
-.thread-copy strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
-.thread-copy time { color: #858c96; font-size: 11px; }
-.thread-copy b { display: block; margin-top: 4px; overflow: hidden; color: var(--micro-ink-soft); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.thread-copy strong { overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.thread-copy time { color: #858c96; font-size: 13px; }
+.thread-copy b { display: block; margin-top: 4px; overflow: hidden; color: var(--micro-ink-soft); font-size: 15px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .thread-row.unread .thread-copy b { color: var(--micro-ink); font-weight: 750; }
-.thread-copy small { display: block; margin-top: 5px; color: #828a96; font-size: 11px; }
+.thread-copy small { display: block; margin-top: 5px; color: #828a96; font-size: 13px; }
 .unread-dot { position: absolute; right: 0; top: 44px; width: 8px; height: 8px; border-radius: 50%; background: var(--micro-purple); }
 .message-page { min-height: 100%; padding: 18px 17px 118px; }
 .system-event { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 16px; padding: 9px 10px; border-radius: 12px; background: #e9f4ef; color: #47665d; font-size: 11px; line-height: 1.35; text-align: center; }
@@ -1083,8 +1102,8 @@
 
 .profile-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 13px; padding: 16px; border: 1px solid var(--micro-line); border-radius: 19px; background: #fffdfa; }
 .profile-card h2 { margin: 0; font-family: var(--micro-display); font-size: 24px; }
-.profile-card p { margin: 2px 0 5px; color: var(--micro-ink-soft); font-size: 12px; }
-.trust-line { display: flex; align-items: center; gap: 5px; color: var(--micro-teal-dark); font-size: 11px; font-weight: 800; }
+.profile-card p { margin: 2px 0 5px; color: var(--micro-ink-soft); font-size: 13px; }
+.trust-line { display: flex; align-items: center; gap: 5px; color: var(--micro-teal-dark); font-size: 12px; font-weight: 800; }
 .trust-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin: 11px 0 23px; border: 1px solid var(--micro-line); border-radius: 17px; background: #f4eee4; }
 .trust-stats div { padding: 13px 6px; text-align: center; }
 .trust-stats div + div { border-left: 1px solid var(--micro-line); }
@@ -1116,8 +1135,8 @@
 .settings-icon.orange { background: #fbeadc; color: var(--micro-orange); }
 .settings-row strong,
 .settings-row small { display: block; }
-.settings-row strong { font-size: 15px; }
-.settings-row small { margin-top: 3px; color: var(--micro-ink-soft); font-size: 12px; }
+.settings-row strong { font-size: 16px; }
+.settings-row small { margin-top: 3px; color: var(--micro-ink-soft); font-size: 13px; }
 .settings-row-static { cursor: default; }
 .sign-out-row { color: #8a3e38; }
 .sign-out-row .settings-icon { background: #fff0ed; color: #a24c43; }
