@@ -1358,12 +1358,10 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
 function TaskCard({ task, selected = false, unavailable = false, blockedReason, onOpen, onRefuse }: { task: Task; selected?: boolean; unavailable?: boolean; blockedReason?: string; onOpen: (task: Task) => void; onRefuse?: (task: Task) => void }) {
   const ModeIcon = modeMeta[task.mode].icon;
   const TaskIcon = task.icon;
-  const auth = useAuth();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
   const ownership = useListingOwnership();
   const isOwnedListing = ownership.isOwned(task);
-  const isPreviewExample = Boolean(auth.session && !auth.demoMode && !task.ownerId);
   return (
     <article className="task-card" data-selected={selected ? "true" : "false"} data-mode={task.mode} data-unavailable={unavailable ? "true" : "false"}>
       <div className="task-requester-row">
@@ -1373,7 +1371,6 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
         {/* Refuse without opening the job: the card leaves the list and stops notifying. */}
         {onRefuse && !isOwnedListing && !unavailable ? <button className="task-refuse-button" aria-label={`Refuse ${task.title}`} onClick={() => onRefuse(task)}><X size={16} weight="bold" aria-hidden="true" /></button> : null}
       </div>
-      {isPreviewExample ? <p className="review-flag"><Info size={14} weight="fill" /> Preview example · interactions stay local</p> : null}
       <div className="task-heading-pay">
         <h2>{task.title}</h2>
         {task.earning ? <div className="earning"><strong>${task.earning}</strong><span>You earn</span></div> : <span className="volunteer-label">No payment</span>}
@@ -1386,9 +1383,7 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
         <strong>{task.mode === "community" ? "Volunteer" : "Fair pay"}</strong>
       </div>
       {blockedReason && !unavailable && !isOwnedListing ? <p className="review-flag blocked-flag"><Warning size={14} weight="fill" /> {blockedReason}</p> : null}
-      {selected ? <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button> : (
-        <button className="card-link" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View details"} {!unavailable ? <ArrowRight size={17} /> : null}</button>
-      )}
+      <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button>
       {/* Prototype only: there is no second account to post from, so a listing
           of your own can stand in as a neighbor's to walk the helper side. */}
       {!unavailable && ownership.canPreview(task) ? (
@@ -1448,7 +1443,6 @@ function makeManageListingScreen(task: Task): FlowScreen {
  * rather than quietly rewriting one neighbors may already have read.
  */
 function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void }) {
-  const auth = useAuth();
   const { setOwnedTasks, setActiveTab, setSelectedTaskId, refreshRemoteTasks, acceptedTaskIds } = useMicro();
   const keyboard = useKeyboard();
   const now = useMemo(() => new Date(), []);
@@ -1733,7 +1727,6 @@ function TaskDetailScreen({ task, onDone, onManage }: { task: Task; onDone: () =
                 <p>{task.description}</p>
                 {task.earning ? <div className="hero-earning"><strong>${task.earning}</strong><span>helper receives</span></div> : null}
               </section>
-              {isPreviewExample ? <div className="persona-scope-note" role="status"><Info size={18} weight="fill" /><span><strong>Preview example</strong> You can inspect this sample, but signed-in accounts can only accept real listings from neighbors.</span></div> : null}
               <section className="detail-section">
                 <h2>At a glance</h2>
                 <div className="glance-grid">
