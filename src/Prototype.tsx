@@ -1308,9 +1308,17 @@ function jobStageFor(task: Task, now: Date): JobStage {
  */
 function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
   const flow = useFlow();
+  const auth = useAuth();
   const { setActiveTab, setSelectedTaskId, profilePhotos, refreshRemoteTasks, collaboration } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
+  // The same job reads differently from each side: one person is doing the work
+  // and the other is waiting for it, so the panel has to say which you are.
+  const myId = auth.session?.user.id ?? null;
+  const jobAssignment = collaboration.assignments.find((entry) => entry.taskId === task.id && entry.status === "accepted");
+  const iAmRequester = Boolean(myId && (task.ownerId === myId || jobAssignment?.requesterId === myId));
+  const counterpart = iAmRequester ? jobAssignment?.helperName?.trim() : jobAssignment?.requesterName?.trim();
+  const counterpartName = counterpart || (iAmRequester ? "A neighbor" : detail.requester);
   const protectedAddress = task.ownerId ? task.privateAddress?.trim() : detail.address;
   const stage = jobStageFor(task, now);
   // Straight to the job. Handing off to the Activity tab would land on a list
@@ -1323,20 +1331,20 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
   return (
     <article className="active-job" data-stage={stage}>
       <header className="active-job-head">
-        <p className="active-job-label"><span className="live-dot" aria-hidden="true" /> {stage === "now" ? "Job underway" : stage === "soon" ? "Job coming up" : stage === "today" ? "Job today" : "Your active job"}</p>
+        <p className="active-job-label"><span className="live-dot" aria-hidden="true" /> {iAmRequester ? (stage === "now" ? `${counterpartName} is working now` : `${counterpartName} is helping`) : stage === "now" ? "Job underway" : stage === "soon" ? "Job coming up" : stage === "today" ? "Job today" : "Your active job"}</p>
         <p className="active-job-countdown" role={stage === "scheduled" ? undefined : "status"}>{task.startsAt ? countdownLabel(now, task.startsAt) : task.time}</p>
       </header>
       <h2>{task.title}</h2>
-      <p className="active-job-meta">{task.time} · {task.duration} · {task.earning ? `$${task.earning} you earn` : "Volunteer"}</p>
+      <p className="active-job-meta">{task.time} · {task.duration} · {task.earning ? `$${task.earning} ${iAmRequester ? "you pay" : "you earn"}` : "Volunteer"}</p>
 
       {stage === "scheduled" ? (
-        <button className="primary-button" onClick={openJob}>Open job <ArrowRight size={18} /></button>
+        <button className="primary-button" onClick={openJob}>{iAmRequester ? "View this job" : "Open job"} <ArrowRight size={18} /></button>
       ) : (
         <>
           <div className="active-job-person">
-            <PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} label={`${detail.requester} profile photo`} />
-            <span><strong>{detail.requester}</strong><small>{detail.trust}</small></span>
-            <button className="active-job-message" aria-label={`Message ${detail.requester}`} onClick={() => setActiveTab("messages")}><ChatCircle size={20} weight="fill" aria-hidden="true" /></button>
+            <PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} label={`${counterpartName} profile photo`} />
+            <span><strong>{counterpartName}</strong><small>{iAmRequester ? "Helping with your task" : detail.trust}</small></span>
+            <button className="active-job-message" aria-label={`Message ${counterpartName}`} onClick={() => setActiveTab("messages")}><ChatCircle size={20} weight="fill" aria-hidden="true" /></button>
           </div>
 
           {/* The exact address is routable only when the protected row actually
@@ -1355,7 +1363,7 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
             {task.completion ? <p className="active-job-done"><SealCheck size={14} weight="fill" aria-hidden="true" />Done when: {task.completion}</p> : null}
           </div>
 
-          <button className="primary-button" onClick={openJob}>{stage === "now" ? "Open job and check in" : "Open job"} <ArrowRight size={18} /></button>
+          <button className="primary-button" onClick={openJob}>{iAmRequester ? "View this job" : stage === "now" ? "Open job and check in" : "Open job"} <ArrowRight size={18} /></button>
         </>
       )}
     </article>
@@ -3505,8 +3513,22 @@ function ProfileScreen() {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result !== "string") return;
-      setProfilePhotos((current) => ({ ...current, [persona]: reader.result as string }));
-      setPhotoError("");
+      // A phone photo is several megabytes as a data URL and would exhaust the
+      // browser's storage on its own. An avatar is never shown above ~68px, so
+      // it is squared and scaled down before anything keeps hold of it.
+      const image = new Image();
+      image.onload = () => {
+        const side = Math.min(image.width, image.height);
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 256;
+        const context = canvas.getContext("2d");
+        if (!context) { setPhotoError("That image could not be prepared. Try another file."); return; }
+        context.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, 256, 256);
+        setProfilePhotos((current) => ({ ...current, [persona]: canvas.toDataURL("image/jpeg", 0.85) }));
+        setPhotoError("");
+      };
+      image.onerror = () => setPhotoError("That image could not be read. Try another file.");
+      image.src = reader.result;
     };
     reader.onerror = () => setPhotoError("That image could not be previewed. Try another file.");
     reader.readAsDataURL(file);

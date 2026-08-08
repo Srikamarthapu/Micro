@@ -283,7 +283,26 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   const [refusedJobIds, setRefusedJobIds] = useState<string[]>([]);
   const [neighborPreviewIds, setNeighborPreviewIds] = useState<string[]>([]);
   const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
-  const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
+  // The chosen photo is browser-local by design — nothing is uploaded — but it
+  // should still survive a reload rather than being picked again each session.
+  const photoStorageKey = auth.session?.user.id ? `micro-profile-photos-${auth.session.user.id}` : "micro-profile-photos-demo";
+  const [profilePhotos, setProfilePhotosState] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(photoStorageKey);
+      setProfilePhotosState(stored ? { adult: "", youth: "", guardian: "", ...(JSON.parse(stored) as Partial<Record<Persona, string>>) } : { adult: "", youth: "", guardian: "" });
+    } catch {
+      setProfilePhotosState({ adult: "", youth: "", guardian: "" });
+    }
+  }, [photoStorageKey]);
+  const setProfilePhotos: Dispatch<SetStateAction<Record<Persona, string>>> = useCallback((update) => {
+    setProfilePhotosState((current) => {
+      const next = typeof update === "function" ? (update as (previous: Record<Persona, string>) => Record<Persona, string>)(current) : update;
+      // A full storage quota should cost the photo, not the screen.
+      try { window.localStorage.setItem(photoStorageKey, JSON.stringify(next)); } catch { /* keep going */ }
+      return next;
+    });
+  }, [photoStorageKey]);
 
   // Restore an accepted live task after reload for either side of the match.
   // The assignment is the source of truth; these existing lifecycle fields

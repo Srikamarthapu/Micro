@@ -26,6 +26,8 @@ export type TaskAssignment = {
   status: AssignmentStatus;
   createdAt: string;
   settledAt?: string;
+  /** Set once the helper reported the work done and a code was issued. */
+  completionRequestedAt?: string;
   task?: Task;
 };
 
@@ -41,6 +43,8 @@ export type TaskMessage = {
 };
 
 export type CollaborationResult = { ok: boolean; message?: string };
+/** A completion request also hands back the code the helper reads out. */
+export type CompletionCodeResult = CollaborationResult & { code?: string };
 
 function assignmentFromRow(row: Record<string, unknown>, task?: Task): TaskAssignment {
   return {
@@ -54,6 +58,7 @@ function assignmentFromRow(row: Record<string, unknown>, task?: Task): TaskAssig
     status: String(row.status) as AssignmentStatus,
     createdAt: String(row.created_at),
     settledAt: row.settled_at ? String(row.settled_at) : undefined,
+    completionRequestedAt: row.completion_requested_at ? String(row.completion_requested_at) : undefined,
     task,
   };
 }
@@ -82,6 +87,8 @@ export type CollaborationState = {
   acceptTask: (taskId: string) => Promise<CollaborationResult>;
   withdrawAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   cancelAssignment: (assignmentId: string) => Promise<CollaborationResult>;
+  requestCompletion: (assignmentId: string) => Promise<CompletionCodeResult>;
+  confirmCompletion: (assignmentId: string, code: string) => Promise<CollaborationResult>;
   completeAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   sendMessage: (assignmentId: string, body: string) => Promise<CollaborationResult>;
   refresh: () => Promise<void>;
@@ -97,6 +104,8 @@ export function emptyCollaboration(): CollaborationState {
     acceptTask: unavailable,
     withdrawAssignment: unavailable,
     cancelAssignment: unavailable,
+    requestCompletion: unavailable,
+    confirmCompletion: unavailable,
     completeAssignment: unavailable,
     sendMessage: unavailable,
     refresh: async () => {},
@@ -220,6 +229,28 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     return { ok: true };
   }, [assignments, refresh, userId]);
 
+  const requestCompletion = useCallback(async (assignmentId: string): Promise<CompletionCodeResult> => {
+    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.helperId === userId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "This job no longer has an active commitment to finish." };
+    const { data, error: requestError } = await supabase.rpc("request_task_completion", { p_assignment_id: assignment.id });
+    if (requestError) return collaborationFailure(requestError);
+    await refresh();
+    return { ok: true, code: data ? String(data) : undefined };
+  }, [assignments, refresh, userId]);
+
+  const confirmCompletion = useCallback(async (assignmentId: string, code: string): Promise<CollaborationResult> => {
+    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "This task no longer has an active match to complete." };
+    const trimmed = code.trim();
+    if (!/^\d{4}$/.test(trimmed)) return { ok: false, message: "Enter the four digits the helper read out." };
+    const { error: confirmError } = await supabase.rpc("confirm_task_completion", { p_assignment_id: assignment.id, p_code: trimmed });
+    if (confirmError) return collaborationFailure(confirmError);
+    await refresh();
+    return { ok: true };
+  }, [assignments, refresh, userId]);
+
   const cancelAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
@@ -246,8 +277,8 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
   }, [assignments, refresh, userId]);
 
   return useMemo(
-    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, completeAssignment, sendMessage, refresh }),
-    [acceptTask, assignments, cancelAssignment, completeAssignment, error, loading, messagesByAssignment, refresh, sendMessage, withdrawAssignment],
+    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, requestCompletion, confirmCompletion, completeAssignment, sendMessage, refresh }),
+    [acceptTask, assignments, cancelAssignment, completeAssignment, confirmCompletion, error, loading, messagesByAssignment, refresh, requestCompletion, sendMessage, withdrawAssignment],
   );
 }
 
