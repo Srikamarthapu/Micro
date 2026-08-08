@@ -2472,10 +2472,15 @@ function ActivityScreen() {
     ...collaboration.assignments.filter((assignment) => assignment.requesterId === auth.session?.user.id && assignment.task).map((assignment) => assignment.task as Task),
     ...remoteTasks.filter((task) => task.ownerId === auth.session?.user.id),
   ];
+  // A task that has been completed belongs in the history below, not in the
+  // list of listings still standing.
+  const finishedTaskIds = new Set(
+    collaboration.assignments.filter((assignment) => assignment.status === "completed" && assignment.taskId).map((assignment) => assignment.taskId as string),
+  );
   const ownedByPersona = Array.from(new Map([
     ...liveOwnedTasks,
     ...ownedTasks.filter((task) => task.ownerPersona === persona),
-  ].map((task) => [task.id, task])).values());
+  ].map((task) => [task.id, task])).values()).filter((task) => !finishedTaskIds.has(task.id));
   const toggleListingPause = async (task: Task) => {
     const paused = Boolean(task.listingPaused);
     if (task.ownerId && supabase && auth.session) {
@@ -2485,9 +2490,33 @@ function ActivityScreen() {
     }
     setOwnedTasks((current) => current.map((listing) => listing.id === task.id ? { ...listing, listingPaused: !paused } : listing));
   };
+  // Finished work, from whichever side of it you were on. Read from the server
+  // assignments rather than local session state, so completing a job updates
+  // this list for the helper and the requester alike.
+  const signedInUserId = auth.session?.user.id ?? null;
+  const settledAt = (assignment: TaskAssignment) => assignment.settledAt ?? assignment.createdAt;
+  const liveCompletions = collaboration.assignments
+    .filter((assignment) => assignment.status === "completed" && (assignment.helperId === signedInUserId || assignment.requesterId === signedInUserId))
+    .sort((first, second) => settledAt(second).localeCompare(settledAt(first)))
+    .map((assignment) => {
+      const helped = assignment.helperId === signedInUserId;
+      const earning = assignment.task?.earning;
+      const volunteer = assignment.task?.mode === "community";
+      const when = formatMessageDate(settledAt(assignment));
+      const payout = volunteer || !earning ? "" : helped ? ` · $${earning} earned` : ` · $${earning} released`;
+      return {
+        id: `assignment-${assignment.id}`,
+        icon: volunteer ? HandHeart : CheckCircle,
+        title: assignment.taskTitle,
+        copy: `${helped ? `You helped ${assignment.requesterName}` : `${assignment.helperName} completed this`}${payout} · ${when}`,
+      };
+    });
   const completedItems: Array<{ id: string; icon: Icon; title: string; copy: string }> = [
+    ...liveCompletions,
     ...completedSessionTasks.map((task) => ({ id: task.id, icon: task.mode === "community" ? HandHeart : CheckCircle, title: task.title, copy: task.mode === "community" ? "Volunteer task · completed in this session" : `Completed in this session · $${task.earning ?? 0} test payout` })),
-    ...(persona === "adult"
+    // Seeded history is demo furniture. Beside a real completion it would read
+    // as work that actually happened, so a live account never sees it.
+    ...(!auth.demoMode ? [] : persona === "adult"
       ? [
         { id: "porch-light", icon: CheckCircle, title: "Set up porch light timer", copy: "Completed July 30 · $20 released" },
         { id: "garden-beds", icon: HandHeart, title: "Water community garden beds", copy: "Volunteer task · completed July 26" },
@@ -2553,7 +2582,7 @@ function ActivityScreen() {
             {!sponsorSeeking && !sponsorFunded ? <button className="secondary-button" onClick={() => setSponsorSeeking(true)}>Volunteer window ended — seek a sponsor</button> : <button className="secondary-button" onClick={() => flow.push(makeSponsorScreen())}>{sponsorFunded ? "View funded task" : "Sponsor this task"}</button>}
           </article>
         </section> : null}
-        {persona !== "guardian" ? <section className="activity-group completed-group">
+        {persona !== "guardian" && completedItems.length ? <section className="activity-group completed-group">
           <div className="section-heading"><h2>Recently completed</h2><span>{completedItems.length}</span></div>
           {visibleCompletedItems.map(({ id, icon: HistoryIcon, title, copy }) => <div key={id} className="compact-history"><HistoryIcon size={20} weight="fill" /><div><strong>{title}</strong><span>{copy}</span></div></div>)}
           {completedItems.length > 1 ? <button className="history-toggle" aria-expanded={showAllHistory} onClick={() => setShowAllHistory((current) => !current)}>{showAllHistory ? "Show less" : `View all ${completedItems.length}`}<CaretDown size={16} weight="bold" aria-hidden="true" /></button> : null}
