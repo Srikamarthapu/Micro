@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabase";
+import { taskFromRow } from "./taskRows";
+import type { Task } from "./types";
 
 /**
  * The two-sided half of a task: who accepted it and what the two of them said
@@ -15,19 +17,23 @@ export type AssignmentStatus = "accepted" | "withdrawn" | "completed";
 
 export type TaskAssignment = {
   id: string;
-  taskId: string;
-  helperId: string;
+  taskId: string | null;
+  helperId: string | null;
   helperName: string;
-  requesterId: string;
+  requesterId: string | null;
+  requesterName: string;
   taskTitle: string;
   status: AssignmentStatus;
   createdAt: string;
+  settledAt?: string;
+  task?: Task;
 };
 
 export type TaskMessage = {
   id: string;
-  taskId: string;
-  senderId: string;
+  assignmentId: string;
+  taskId: string | null;
+  senderId: string | null;
   senderName: string;
   body: string;
   kind: "human" | "system";
@@ -36,24 +42,28 @@ export type TaskMessage = {
 
 export type CollaborationResult = { ok: boolean; message?: string };
 
-function assignmentFromRow(row: Record<string, unknown>): TaskAssignment {
+function assignmentFromRow(row: Record<string, unknown>, task?: Task): TaskAssignment {
   return {
     id: String(row.id),
-    taskId: String(row.task_id),
-    helperId: String(row.helper_id),
+    taskId: row.task_id ? String(row.task_id) : null,
+    helperId: row.helper_id ? String(row.helper_id) : null,
     helperName: (row.helper_name as string) || "A neighbor",
-    requesterId: String(row.requester_id),
+    requesterId: row.requester_id ? String(row.requester_id) : null,
+    requesterName: (row.requester_name as string) || task?.requesterName || "A neighbor",
     taskTitle: (row.task_title as string) || "this task",
     status: String(row.status) as AssignmentStatus,
     createdAt: String(row.created_at),
+    settledAt: row.settled_at ? String(row.settled_at) : undefined,
+    task,
   };
 }
 
 function messageFromRow(row: Record<string, unknown>): TaskMessage {
   return {
     id: String(row.id),
-    taskId: String(row.task_id),
-    senderId: String(row.sender_id),
+    assignmentId: String(row.assignment_id),
+    taskId: row.task_id ? String(row.task_id) : null,
+    senderId: row.sender_id ? String(row.sender_id) : null,
     senderName: (row.sender_name as string) || "A neighbor",
     body: String(row.body),
     kind: String(row.kind) === "system" ? "system" : "human",
@@ -64,14 +74,15 @@ function messageFromRow(row: Record<string, unknown>): TaskMessage {
 export type CollaborationState = {
   /** Live and settled assignments on tasks you own or accepted. */
   assignments: TaskAssignment[];
-  /** Every thread you are party to, keyed by task id, oldest message first. */
-  messagesByTask: Record<string, TaskMessage[]>;
+  /** Every thread you are party to, keyed by immutable assignment id. */
+  messagesByAssignment: Record<string, TaskMessage[]>;
   error: string | null;
   /** True until the first load settles, so the UI can avoid a false "no threads". */
   loading: boolean;
   acceptTask: (taskId: string) => Promise<CollaborationResult>;
-  withdrawFromTask: (taskId: string) => Promise<CollaborationResult>;
-  sendMessage: (taskId: string, body: string) => Promise<CollaborationResult>;
+  withdrawAssignment: (assignmentId: string) => Promise<CollaborationResult>;
+  completeAssignment: (assignmentId: string) => Promise<CollaborationResult>;
+  sendMessage: (assignmentId: string, body: string) => Promise<CollaborationResult>;
   refresh: () => Promise<void>;
 };
 
@@ -79,11 +90,12 @@ export function emptyCollaboration(): CollaborationState {
   const unavailable = async () => ({ ok: false, message: "Micro is not connected to a project." });
   return {
     assignments: [],
-    messagesByTask: {},
+    messagesByAssignment: {},
     error: null,
     loading: false,
     acceptTask: unavailable,
-    withdrawFromTask: unavailable,
+    withdrawAssignment: unavailable,
+    completeAssignment: unavailable,
     sendMessage: unavailable,
     refresh: async () => {},
   };
@@ -113,8 +125,26 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
       setLoading(false);
       return;
     }
-    setError(null);
-    setAssignments((assignmentResult.data ?? []).map((row) => assignmentFromRow(row as Record<string, unknown>)));
+    const assignmentRows = (assignmentResult.data ?? []) as Array<Record<string, unknown>>;
+    const taskIds = [...new Set(assignmentRows.flatMap((row) => row.task_id ? [String(row.task_id)] : []))];
+    const tasksById = new Map<string, Task>();
+    let enrichmentError: string | null = null;
+    if (taskIds.length) {
+      const [taskResult, addressResult] = await Promise.all([
+        supabase.from("tasks").select("*").in("id", taskIds),
+        supabase.from("task_private_details").select("task_id, private_address").in("task_id", taskIds),
+      ]);
+      enrichmentError = taskResult.error?.message ?? addressResult.error?.message ?? null;
+      const addresses = new Map(((addressResult.data ?? []) as Array<{ task_id: string; private_address: string }>).map((row) => [row.task_id, row.private_address]));
+      for (const row of (taskResult.data ?? []) as Array<Record<string, unknown>>) {
+        const assignment = assignmentRows.find((candidate) => String(candidate.task_id) === String(row.id));
+        const task = taskFromRow({ ...row, requester_name: assignment?.requester_name });
+        task.privateAddress = addresses.get(task.id);
+        tasksById.set(task.id, task);
+      }
+    }
+    setError(enrichmentError);
+    setAssignments(assignmentRows.map((row) => assignmentFromRow(row, tasksById.get(String(row.task_id)))));
     setMessages((messageResult.data ?? []).map((row) => messageFromRow(row as Record<string, unknown>)));
     setLoading(false);
   }, [userId]);
@@ -137,6 +167,9 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     client.realtime.setAuth(accessToken);
     const channel = client
       .channel(`micro-collaboration-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
+        void refreshRef.current();
+      })
       .on("postgres_changes", { event: "*", schema: "public", table: "task_assignments" }, () => {
         void refreshRef.current();
       })
@@ -149,66 +182,80 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     };
   }, [userId, accessToken]);
 
-  const messagesByTask = useMemo(() => {
+  const messagesByAssignment = useMemo(() => {
     const grouped: Record<string, TaskMessage[]> = {};
     for (const message of messages) {
-      (grouped[message.taskId] ??= []).push(message);
+      (grouped[message.assignmentId] ??= []).push(message);
     }
     return grouped;
   }, [messages]);
 
   const acceptTask = useCallback(async (taskId: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
-    const { error: insertError } = await supabase
-      .from("task_assignments")
-      .insert({ task_id: taskId, helper_id: userId, status: "accepted" });
-    if (insertError) {
-      // The partial unique index is the race guard: two helpers tapping accept
-      // at once, and the loser is told the truth rather than shown a match.
-      const alreadyTaken = insertError.code === "23505";
-      return {
-        ok: false,
-        message: alreadyTaken
-          ? "Another neighbor accepted this job first."
-          : insertError.message,
-      };
-    }
+    const { error: acceptError } = await supabase.rpc("accept_task", { p_task_id: taskId });
+    if (acceptError) return collaborationFailure(acceptError);
     await refresh();
     return { ok: true };
   }, [refresh, userId]);
 
-  const withdrawFromTask = useCallback(async (taskId: string): Promise<CollaborationResult> => {
+  const withdrawAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
-    const { error: updateError } = await supabase
-      .from("task_assignments")
-      .update({ status: "withdrawn" })
-      .eq("task_id", taskId)
-      .eq("helper_id", userId)
-      .eq("status", "accepted");
-    if (updateError) return { ok: false, message: updateError.message };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.helperId === userId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "This task no longer has an active commitment to withdraw." };
+    const { error: withdrawError } = await supabase.rpc("withdraw_task_assignment", { p_assignment_id: assignment.id });
+    if (withdrawError) return collaborationFailure(withdrawError);
     await refresh();
     return { ok: true };
-  }, [refresh, userId]);
+  }, [assignments, refresh, userId]);
 
-  const sendMessage = useCallback(async (taskId: string, body: string): Promise<CollaborationResult> => {
+  const completeAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
+    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "This task no longer has an active match to complete." };
+    const { error: completeError } = await supabase.rpc("complete_task_assignment", { p_assignment_id: assignment.id });
+    if (completeError) return collaborationFailure(completeError);
+    await refresh();
+    return { ok: true };
+  }, [assignments, refresh, userId]);
+
+  const sendMessage = useCallback(async (assignmentId: string, body: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const trimmed = body.trim();
     if (!trimmed) return { ok: false, message: "Write a message first." };
+    if (trimmed.length > 2000) return { ok: false, message: "Keep messages at 2,000 characters or fewer." };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "Messages unlock only after a protected match." };
     const { error: insertError } = await supabase
       .from("task_messages")
-      .insert({ task_id: taskId, sender_id: userId, body: trimmed, kind: "human" });
-    if (insertError) return { ok: false, message: insertError.message };
+      .insert({ assignment_id: assignment.id, client_nonce: crypto.randomUUID(), body: trimmed });
+    if (insertError) return collaborationFailure(insertError);
     await refresh();
     return { ok: true };
-  }, [refresh, userId]);
+  }, [assignments, refresh, userId]);
 
   return useMemo(
-    () => ({ assignments, messagesByTask, error, loading, acceptTask, withdrawFromTask, sendMessage, refresh }),
-    [acceptTask, assignments, error, loading, messagesByTask, refresh, sendMessage, withdrawFromTask],
+    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, completeAssignment, sendMessage, refresh }),
+    [acceptTask, assignments, completeAssignment, error, loading, messagesByAssignment, refresh, sendMessage, withdrawAssignment],
   );
 }
 
 /** The live assignment on a task, if one exists. */
 export function liveAssignmentFor(assignments: TaskAssignment[], taskId: string): TaskAssignment | null {
   return assignments.find((assignment) => assignment.taskId === taskId && assignment.status === "accepted") ?? null;
+}
+
+function collaborationFailure(error: { code?: string; message?: string }): CollaborationResult {
+  const message = String(error.message ?? "").toLowerCase();
+  if (message.includes("task_already_accepted")) return { ok: false, message: "Another neighbor accepted this job first." };
+  if (message.includes("helper_already_has_active_task")) return { ok: false, message: "Finish or withdraw from your current commitment before accepting another task." };
+  if (message.includes("task_owner_cannot_accept")) return { ok: false, message: "You cannot accept a task you posted." };
+  if (message.includes("custom_task_awaiting_review")) return { ok: false, message: "This custom task is still awaiting review." };
+  if (message.includes("task_start_has_passed") || message.includes("task_is_paused") || message.includes("task_not_found")) return { ok: false, message: "This task is no longer available." };
+  if (message.includes("task_private_address_required")) return { ok: false, message: "The requester must add a protected task address before matching." };
+  if (message.includes("assignment_not_found")) return { ok: false, message: "This protected match no longer exists." };
+  if (message.includes("assignment_withdrawal_not_allowed")) return { ok: false, message: "Only the active helper can withdraw from this task." };
+  if (message.includes("assignment_completion_not_allowed")) return { ok: false, message: "Only the requester can mark this matched task complete." };
+  if (message.includes("live_authenticated_session_required")) return { ok: false, message: "Your session needs to be refreshed before continuing." };
+  if (message.includes("message_not_allowed") || message.includes("not_a_task_participant")) return { ok: false, message: "Only the matched requester and helper can use this thread." };
+  return { ok: false, message: error.message || "Micro could not complete that action." };
 }

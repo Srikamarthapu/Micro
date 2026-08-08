@@ -1,12 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { Wrench } from "@phosphor-icons/react";
 import { supabase } from "../supabase";
-import { categoryById } from "../taskCatalog";
-import { initialsFromName, useAuth } from "./AuthProvider";
+import { useAuth } from "./AuthProvider";
 import { areaIdFromServiceArea, type AreaId } from "./geo";
 import { useCollaboration, type CollaborationState } from "./collaboration";
 import { initialPostDraft, tasks } from "./fixtures";
-import { type CommunityStage, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode, type TaskReviewState } from "./types";
+import { taskFromRow } from "./taskRows";
+import { type CommunityStage, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PersonaSessionState, type PostDraft, type TabId, type Task, type TaskEvent, type TaskReviewState } from "./types";
 
 /**
  * All app state that is not authentication: the selected task, lifecycle
@@ -32,6 +31,7 @@ export type MicroContextValue = {
   setPostedTask: (task: Task | null) => void;
   ownedTasks: Task[];
   remoteTasks: Task[];
+  remoteTasksLoaded: boolean;
   remoteTasksError: string | null;
   refreshRemoteTasks: () => Promise<void>;
   /** Acceptances and task threads shared with the other side, live from Supabase. */
@@ -132,27 +132,70 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   // Listings other neighbors published. Empty in demo mode, where there is no
   // account to attribute a post to and nothing to sync with.
   const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
+  const [remoteTasksLoaded, setRemoteTasksLoaded] = useState(false);
   const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
   const signedInUserId = auth.session?.user.id ?? null;
+  const promotedLiveListingForUserRef = useRef<string | null>(null);
 
   const refreshRemoteTasks = useCallback(async () => {
-    if (!supabase || !signedInUserId) { setRemoteTasks([]); setRemoteTasksError(null); return; }
+    if (!supabase || !signedInUserId) {
+      setRemoteTasks([]);
+      setRemoteTasksLoaded(true);
+      setRemoteTasksError(null);
+      return;
+    }
     const { data, error } = await supabase
       .from("task_listings")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(200);
+    setRemoteTasksLoaded(true);
     if (error) { setRemoteTasksError(error.message); return; }
     setRemoteTasksError(null);
     setRemoteTasks((data ?? []).map((row) => taskFromRow(row as Record<string, unknown>)));
   }, [signedInUserId]);
 
-  useEffect(() => { void refreshRemoteTasks(); }, [refreshRemoteTasks]);
+  useEffect(() => {
+    setRemoteTasksLoaded(false);
+    void refreshRemoteTasks();
+  }, [refreshRemoteTasks]);
+
   const collaboration = useCollaboration(signedInUserId, auth.session?.access_token ?? null);
-  // An acceptance can arrive for a listing this device has never loaded, so a
-  // new assignment is also a reason to re-read the listings behind it.
-  const assignmentCount = collaboration.assignments.length;
-  useEffect(() => { if (assignmentCount) void refreshRemoteTasks(); }, [assignmentCount, refreshRemoteTasks]);
+  const refreshCollaboration = collaboration.refresh;
+
+  // Realtime is the fast path. Focus and a modest poll remain as reconciliation
+  // paths for a suspended phone or a briefly disconnected websocket.
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !signedInUserId) return;
+    const refresh = () => {
+      void Promise.all([refreshRemoteTasks(), refreshCollaboration()]);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const timer = window.setInterval(refresh, 8_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    const channel = client
+      .channel(`micro-live-tasks-${signedInUserId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, refresh)
+      .subscribe();
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void client.removeChannel(channel);
+    };
+  }, [refreshCollaboration, refreshRemoteTasks, signedInUserId]);
+
+  useEffect(() => {
+    if (!signedInUserId || !remoteTasksLoaded || !remoteTasks.length) return;
+    if (promotedLiveListingForUserRef.current === signedInUserId) return;
+    promotedLiveListingForUserRef.current = signedInUserId;
+    setSelectedTaskId(remoteTasks[0].id);
+  }, [remoteTasks, remoteTasksLoaded, signedInUserId]);
   const [postDraft, setPostDraft] = useState<PostDraft>(initialPostDraft);
   const [acceptedTaskIds, setAcceptedTaskIds] = useState<string[]>([]);
   const [closedTaskIds, setClosedTaskIds] = useState<string[]>([]);
@@ -189,6 +232,50 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   const [neighborPreviewIds, setNeighborPreviewIds] = useState<string[]>([]);
   const [profileAreaId, setProfileAreaId] = useState<AreaId>(() => areaIdFromServiceArea(auth.profile?.service_area));
   const [profilePhotos, setProfilePhotos] = useState<Record<Persona, string>>({ adult: "", youth: "", guardian: "" });
+
+  // Restore an accepted live task after reload for either side of the match.
+  // The assignment is the source of truth; these existing lifecycle fields
+  // only adapt the current shell so the matched task remains pinned and its
+  // Activity entry stays reachable. The server role also locks the interface
+  // to requester or helper instead of exposing the fixture perspective switch.
+  useEffect(() => {
+    if (!signedInUserId) return;
+    const activeAssignment = collaboration.assignments.find((assignment) =>
+      assignment.status === "accepted" &&
+      (assignment.helperId === signedInUserId || assignment.requesterId === signedInUserId),
+    );
+    const activeTask = activeAssignment?.task ?? (activeAssignment?.taskId ? remoteTasks.find((task) => task.id === activeAssignment.taskId) : undefined);
+    if (!activeAssignment || !activeTask) return;
+    setAcceptedTaskIds((current) => current.includes(activeTask.id) ? current : [activeTask.id, ...current]);
+    setAcceptedTaskActors((current) => current[activeTask.id] === "adult" ? current : { ...current, [activeTask.id]: "adult" });
+    setActivityPerspective(activeAssignment.helperId === signedInUserId ? "helper" : "requester");
+    setSelectedTaskId(activeTask.id);
+    if (activeTask.mode === "community") {
+      setCommunityTask(activeTask);
+      setCommunityStage("Committed");
+    } else {
+      setActiveTask(activeTask);
+      setPaidStage("Payment secured");
+    }
+  }, [collaboration.assignments, remoteTasks, signedInUserId]);
+
+  // Realtime settlement removes only server-backed commitments from the active
+  // shell. Local fixture commitments keep their own lifecycle state.
+  useEffect(() => {
+    if (!signedInUserId) return;
+    const participantAssignments = collaboration.assignments.filter((assignment) =>
+      assignment.helperId === signedInUserId || assignment.requesterId === signedInUserId,
+    );
+    const serverTaskIds = new Set(participantAssignments.flatMap((assignment) => assignment.taskId ? [assignment.taskId] : []));
+    const activeServerTaskIds = new Set(participantAssignments.flatMap((assignment) => assignment.status === "accepted" && assignment.taskId ? [assignment.taskId] : []));
+    if (!serverTaskIds.size) return;
+    setAcceptedTaskIds((current) => current.filter((id) => !serverTaskIds.has(id) || activeServerTaskIds.has(id)));
+    const completedIds = participantAssignments.flatMap((assignment) => assignment.status === "completed" && assignment.taskId ? [assignment.taskId] : []);
+    if (completedIds.length) {
+      setClosedTaskIds((current) => [...new Set([...completedIds, ...current])]);
+    }
+  }, [collaboration.assignments, signedInUserId]);
+
   const personaSessionsRef = useRef<Record<Persona, PersonaSessionState>>({
     adult: {
       selectedTaskId: "leaves", paidStage: "Payment secured", activeTask: tasks[0], communityTask: null, communityStage: "Committed", communityChecks: [false, false], postedTask: null, postDraft: initialPostDraft, acceptedTaskIds: [], closedTaskIds: [], acceptedTaskActors: {}, taskEvents: {}, activityPerspective: "helper", savedTaskIds: ["hedge", "table"], sponsorFunded: false, sponsorSeeking: false, threadMessages: {}, blockedThreadIds: [], blockedRequesterNames: [], reportedTaskIds: [], reportReasons: {}, completionSubmissions: {}, taskReviews: {}, notificationsEnabled: true, profileAreaId: "all",
@@ -254,6 +341,7 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       ownedTasks,
       setOwnedTasks,
       remoteTasks,
+      remoteTasksLoaded,
       remoteTasksError,
       refreshRemoteTasks,
       collaboration,
@@ -322,42 +410,8 @@ export function MicroProvider({ children }: { children: ReactNode }) {
       profilePhotos,
       setProfilePhotos,
     }),
-    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, collaboration, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
+    [acceptedTaskActors, accessTermsAccepted, acceptedTaskIds, activeTab, activeTask, activityPerspective, blockedRequesterNames, blockedThreadIds, closedTaskIds, collaboration, communityChecks, communityStage, communityTask, completionSubmissions, guardianLinked, guardianSupervisedTaskId, guardianSupervisionStatus, moderationHolds, neighborPreviewIds, notificationsEnabled, ownedTasks, refreshRemoteTasks, remoteTasks, remoteTasksError, remoteTasksLoaded, paidStage, persona, postDraft, postedTask, profileAreaId, profilePhotos, reportReasons, reportedTaskIds, refusedJobIds, savedTaskIds, seenSpecialJobIds, selectedTaskId, sponsorFunded, sponsorSeeking, taskEvents, taskReviews, threadMessages, youthAge, youthApprovalTaskId, youthApprovedTaskId, youthDeclinedTaskId],
   );
 
   return <MicroContext.Provider value={value}>{children}</MicroContext.Provider>;
-}
-
-/**
- * A listing row carries a category id rather than an icon, because an icon is a
- * React component and cannot be stored. The catalog is the source of truth for
- * both the icon and the category label on the way back out.
- */
-export function taskFromRow(row: Record<string, unknown>): Task {
-  const categoryId = String(row.category_id ?? "");
-  const category = categoryById(categoryId);
-  const earning = row.earning === null || row.earning === undefined ? undefined : Number(row.earning);
-  return {
-    id: String(row.id),
-    ownerId: String(row.owner_id),
-    title: String(row.title),
-    description: String(row.description),
-    mode: String(row.mode) as TaskMode,
-    earning,
-    coords: { lat: Number(row.lat), lng: Number(row.lng) },
-    areaId: String(row.area_id) as AreaId,
-    area: String(row.area),
-    time: String(row.time_label),
-    duration: String(row.duration),
-    icon: category?.icon ?? Wrench,
-    category: String(row.category),
-    included: String(row.included ?? ""),
-    excluded: String(row.excluded ?? ""),
-    completion: String(row.completion ?? ""),
-    requesterName: (row.requester_name as string) || "A neighbor",
-    requesterInitials: initialsFromName((row.requester_name as string) || "A neighbor"),
-    youthEligible: Boolean(row.youth_eligible),
-    listingPaused: Boolean(row.listing_paused),
-    customPending: Boolean(row.custom_pending) || undefined,
-  };
 }

@@ -505,6 +505,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             message: "Micro found account-owned files that must be safely removed first. Contact support before trying again.",
           };
         }
+        if (response.code === "active_task_commitment_requires_settlement") {
+          return {
+            ok: false,
+            code: response.code,
+            message: "Close or settle your active matched task before deleting this account. The task and its participant messages are still intact.",
+          };
+        }
         if (response.code === "reauthentication_required") {
           return {
             ok: false,

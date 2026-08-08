@@ -157,14 +157,59 @@ export default {
         .sort((left, right) => left.name.localeCompare(right.name))
     }
 
+    const hasActiveTaskCommitment = async (): Promise<boolean> => {
+      const [helperResult, ownedTasksResult] = await Promise.all([
+        ctx.supabaseAdmin
+          .from("task_assignments")
+          .select("task_id")
+          .eq("helper_id", verifiedUser.id)
+          .eq("status", "accepted")
+          .limit(1),
+        ctx.supabaseAdmin
+          .from("tasks")
+          .select("id")
+          .eq("owner_id", verifiedUser.id),
+      ])
+
+      if (helperResult.error || ownedTasksResult.error) {
+        throw new Error("task_commitment_check_failed")
+      }
+      if ((helperResult.data ?? []).length > 0) return true
+
+      const ownedTaskIds = ((ownedTasksResult.data ?? []) as Array<{ id: string }>)
+        .map((row) => row.id)
+      if (!ownedTaskIds.length) return false
+
+      const assignmentResult = await ctx.supabaseAdmin
+        .from("task_assignments")
+        .select("task_id")
+        .in("task_id", ownedTaskIds)
+        .eq("status", "accepted")
+        .limit(1)
+      if (assignmentResult.error) throw new Error("task_commitment_check_failed")
+      return (assignmentResult.data ?? []).length > 0
+    }
+
     let ownershipBlockers: OrganizationSummary[]
+    let activeTaskCommitment: boolean
     try {
-      ownershipBlockers = await findOwnershipBlockers()
+      ;[ownershipBlockers, activeTaskCommitment] = await Promise.all([
+        findOwnershipBlockers(),
+        hasActiveTaskCommitment(),
+      ])
     } catch {
       return jsonError(
         503,
-        "ownership_check_failed",
-        "Micro could not safely verify organization ownership. Nothing was deleted.",
+        "deletion_safety_check_failed",
+        "Micro could not safely verify account obligations. Nothing was deleted.",
+      )
+    }
+
+    if (activeTaskCommitment) {
+      return jsonError(
+        409,
+        "active_task_commitment_requires_settlement",
+        "Close or settle the active matched task before deleting this account.",
       )
     }
 
@@ -190,9 +235,21 @@ export default {
     // trigger exception to a generic deletion error, so re-check after failure
     // to recover the stable ownership response for the client.
     try {
-      ownershipBlockers = await findOwnershipBlockers()
+      ;[ownershipBlockers, activeTaskCommitment] = await Promise.all([
+        findOwnershipBlockers(),
+        hasActiveTaskCommitment(),
+      ])
     } catch {
       ownershipBlockers = []
+      activeTaskCommitment = false
+    }
+
+    if (activeTaskCommitment) {
+      return jsonError(
+        409,
+        "active_task_commitment_requires_settlement",
+        "Close or settle the active matched task before deleting this account.",
+      )
     }
 
     if (ownershipBlockers.length) {

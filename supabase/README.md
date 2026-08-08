@@ -40,6 +40,55 @@ organization, membership, task, and private-address read or write, while the
 capability RPC uses the same check directly. Future live tables must add the
 same restrictive session gate; short JWT expiry remains defense in depth.
 
+## Live task interaction contract
+
+`accept_task(p_task_id)` is the only authenticated assignment write path. It
+requires a live non-anonymous session and task-accept capability, locks the
+requester and helper identities plus the listing and private-address row, and
+creates one `task_assignments` row. That assignment ID is the private thread
+ID; there is no client-created conversation row. Partial unique indexes allow
+only one accepted helper per task and one accepted task per helper while still
+retaining withdrawn and completed history. Own, paused, past, custom-pending,
+addressless, or already accepted tasks are rejected with stable error
+messages. A retry by the winning helper returns the original assignment.
+
+Accepted listings leave `task_listings`; review-pending listings are visible
+there only to their requester. Only the requester and assigned helper can fetch
+an assignment, its participant-name row, or its transcript. The exact match
+address extends to the helper only while that assignment is accepted.
+Messages are append-only and writable only while the assignment is accepted.
+Authenticated clients insert only `(assignment_id, client_nonce, body)`—the
+database supplies `sender_id = auth.uid()` and `kind = 'human'`. Column grants
+prevent sender or system-message spoofing before RLS is evaluated, and the
+per-sender nonce makes a network retry idempotent. Both new exposed tables
+carry the same restrictive live-session policy as the rest of Micro.
+
+The trusted state transitions are:
+
+- `withdraw_task_assignment(p_assignment_id)`, helper-only;
+- `complete_task_assignment(p_assignment_id)`, requester-only, which also
+  pauses the source listing.
+
+Both transitions append-close but retain the thread. Settled account deletion
+anonymizes requester, helper, and sender foreign keys and preserves the task
+title snapshot and transcript. Active assignments instead block participant or
+task deletion with `active_task_commitment_requires_settlement`.
+
+Client reads use `task_assignment_details` and `task_message_details`. Routes,
+message grouping, sends, and subscriptions must key a thread by
+`assignment_id`, not `task_id`, because one task may have more than one
+historical assignment after withdrawal. The client must tolerate nullable
+`task_id`, `requester_id`, `helper_id`, and `sender_id` on retained history.
+
+Acceptance is coordination only: it does not claim that payment is secured.
+Authenticated browser grants permit only pausing an unmatched task; title,
+scope, schedule, review provenance, and private address are not directly
+mutable. Browser task inserts cannot set review or paused state and therefore
+fail closed as review-pending until the trusted catalog publisher replaces that
+interim path. Postgres Changes publishes tasks, assignments, and messages for
+prototype responsiveness; RLS remains the authorization boundary, and clients
+should refetch on reconnect or focus.
+
 ## Local verification
 
 With the local Supabase stack running:
@@ -58,6 +107,12 @@ psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
 
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/tests/live_auth_session_rls.sql
+
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/task_interactions_rls.sql
+
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/trusted_catalog_task_publishing.sql
 ```
 
 The pure policy checks run without a Supabase stack:

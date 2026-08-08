@@ -24,73 +24,152 @@ begin
     (session_id, caller_id),
     ('60000000-0000-4000-8000-000000000002', neighbor_id);
 
-  insert into public.tasks (
-    id,
-    owner_id,
-    template_id,
-    title,
-    description,
-    included,
-    excluded,
-    completion,
-    category,
-    category_id,
-    mode,
-    earning,
-    lat,
-    lng,
-    area_id,
-    area,
-    time_label,
-    duration,
-    youth_eligible,
-    listing_paused
-  )
-  values
-    (
-      '70000000-0000-4000-8000-000000000001',
-      caller_id,
-      'session-owner-task',
-      'Caller session task',
-      'A caller-owned task used to verify live and revoked write access.',
-      'One bounded task',
-      'No unsafe work',
-      'Photo confirmation',
-      'Errands',
-      'errands',
-      'paid',
-      25,
-      37.8044,
-      -122.2712,
-      'downtown',
-      'Downtown & Lake Merritt',
-      'Tomorrow at 10:00 AM',
-      '1 hour',
+  if to_regclass('private.task_catalog_variants') is not null then
+    -- Once trusted publishing is installed, fixture rows must prove the same
+    -- exact catalog provenance as production writes.
+    insert into public.tasks (
+      id,
+      owner_id,
+      template_id,
+      catalog_variant_id,
+      custom_pending,
+      title,
+      description,
+      included,
+      excluded,
+      completion,
+      category,
+      category_id,
+      mode,
+      earning,
+      lat,
+      lng,
+      area_id,
+      area,
+      time_label,
+      starts_at,
+      duration,
+      youth_eligible,
+      listing_paused
+    )
+    select
+      fixture.id,
+      fixture.owner_id,
+      variant.template_id,
+      variant.variant_id,
       false,
-      false
-    ),
-    (
-      '70000000-0000-4000-8000-000000000002',
-      neighbor_id,
-      'session-neighbor-task',
-      'Neighbor session task',
-      'A neighbor-owned task used to verify authenticated listing access.',
-      'One bounded task',
-      'No unsafe work',
-      'Photo confirmation',
-      'Errands',
-      'errands',
-      'paid',
-      30,
-      37.8120,
-      -122.2580,
-      'temescal',
-      'Temescal',
+      variant.title,
+      variant.description,
+      variant.included,
+      variant.excluded,
+      variant.completion,
+      variant.category,
+      variant.category_id,
+      'community',
+      null,
+      fixture.lat,
+      fixture.lng,
+      fixture.area_id,
+      fixture.area,
       'Flexible',
-      '1 hour',
-      false,
+      null,
+      variant.duration_minutes || ' min',
+      variant.youth_eligible,
       false
-    );
+    from (
+      values
+        (
+          '70000000-0000-4000-8000-000000000001'::uuid,
+          caller_id,
+          37.8044::double precision,
+          -122.2712::double precision,
+          'downtown'::text,
+          'Downtown & Lake Merritt'::text
+        ),
+        (
+          '70000000-0000-4000-8000-000000000002'::uuid,
+          neighbor_id,
+          37.8120::double precision,
+          -122.2580::double precision,
+          'temescal'::text,
+          'Temescal'::text
+        )
+    ) as fixture (id, owner_id, lat, lng, area_id, area)
+    cross join private.task_catalog_variants as variant
+    where variant.template_id = 'yard-water'
+      and variant.variant_id = 'default';
+  else
+    insert into public.tasks (
+      id,
+      owner_id,
+      template_id,
+      custom_pending,
+      title,
+      description,
+      included,
+      excluded,
+      completion,
+      category,
+      category_id,
+      mode,
+      earning,
+      lat,
+      lng,
+      area_id,
+      area,
+      time_label,
+      duration,
+      youth_eligible,
+      listing_paused
+    )
+    values
+      (
+        '70000000-0000-4000-8000-000000000001',
+        caller_id,
+        'session-owner-task',
+        false,
+        'Caller session task',
+        'A caller-owned task used to verify live and revoked write access.',
+        'One bounded task',
+        'No unsafe work',
+        'Photo confirmation',
+        'Errands',
+        'errands',
+        'paid',
+        25,
+        37.8044,
+        -122.2712,
+        'downtown',
+        'Downtown & Lake Merritt',
+        'Tomorrow at 10:00 AM',
+        '1 hour',
+        false,
+        false
+      ),
+      (
+        '70000000-0000-4000-8000-000000000002',
+        neighbor_id,
+        'session-neighbor-task',
+        false,
+        'Neighbor session task',
+        'A neighbor-owned task used to verify authenticated listing access.',
+        'One bounded task',
+        'No unsafe work',
+        'Photo confirmation',
+        'Errands',
+        'errands',
+        'paid',
+        30,
+        37.8120,
+        -122.2580,
+        'temescal',
+        'Temescal',
+        'Flexible',
+        '1 hour',
+        false,
+        false
+      );
+  end if;
 
   insert into public.task_private_details (task_id, private_address)
   values (
@@ -319,7 +398,7 @@ begin
   end if;
 
   update public.tasks
-  set title = 'Revoked session update'
+  set listing_paused = true
   where id = '70000000-0000-4000-8000-000000000001';
   get diagnostics updated_rows = row_count;
 
