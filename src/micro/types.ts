@@ -70,9 +70,10 @@ export type PaidStage =
   | "Completion pending"
   | "Payout released"
   | "Completed"
+  | "Canceled"
   | "Reopened";
 export type CommunityStage = "Committed" | "Checked in" | "Completion pending" | "Completed" | "Canceled";
-export type MessageItem = { id: number | string; mine: boolean; text: string; createdAt?: string };
+export type MessageItem = { id: number | string; mine: boolean; text: string; createdAt?: string; kind?: "human" | "system" };
 export type TaskEvent = { id: number; text: string };
 
 export function appendTaskEvent(

@@ -956,10 +956,22 @@ declare
   assignment_one uuid := current_setting('test.assignment_one')::uuid;
   withdrawn public.task_assignments;
   accepted_two public.task_assignments;
+  abandoned_code text;
+  completion_code text;
+  repeated_code text;
 begin
+  abandoned_code := public.request_task_completion(assignment_one);
   withdrawn := public.withdraw_task_assignment(assignment_one);
 
-  if withdrawn.status <> 'withdrawn' or withdrawn.settled_at is null then
+  if abandoned_code !~ '^[0-9]{4}$'
+    or withdrawn.status <> 'withdrawn'
+    or withdrawn.settled_at is null
+    or exists (
+      select 1
+      from public.task_completion_codes
+      where assignment_id = assignment_one
+    )
+  then
     raise exception 'task interaction test failed: helper withdrawal did not settle assignment';
   end if;
 
@@ -1009,13 +1021,42 @@ begin
     raise exception 'task interaction test failed: helper could not take a new settled commitment';
   end if;
 
+  completion_code := public.request_task_completion(accepted_two.id);
+  repeated_code := public.request_task_completion(accepted_two.id);
+  perform set_config('test.completion_code', completion_code, true);
+
+  if completion_code !~ '^[0-9]{4}$'
+    or repeated_code <> completion_code
+    or accepted_two.id is distinct from (
+      select assignment_id
+      from public.task_completion_codes
+      where code = completion_code
+    )
+    or not exists (
+      select 1
+      from public.task_assignments
+      where id = accepted_two.id
+        and completion_requested_at is not null
+    )
+    or not exists (
+      select 1
+      from public.task_messages
+      where assignment_id = accepted_two.id
+        and kind = 'system'
+        and body ilike '%four-digit code%'
+        and body not ilike '%payment%'
+    )
+  then
+    raise exception 'task interaction test failed: helper completion request was not private, idempotent, or honestly announced';
+  end if;
+
   begin
-    perform public.complete_task_assignment(accepted_two.id);
-    raise exception 'task interaction test failed: helper completed requester-only transition';
+    perform public.confirm_task_completion(accepted_two.id, completion_code);
+    raise exception 'task interaction test failed: helper confirmed requester-only completion';
   exception
     when insufficient_privilege then
-      if sqlerrm <> 'assignment_completion_not_allowed' then
-        raise exception 'task interaction test failed: unstable completion denial: %', sqlerrm;
+      if sqlerrm <> 'completion_confirmation_not_allowed' then
+        raise exception 'task interaction test failed: unstable confirmation denial: %', sqlerrm;
       end if;
   end;
 end;
@@ -1023,8 +1064,9 @@ $$;
 
 reset role;
 
--- The requester completes the second match. Completion closes the thread and
--- pauses the listing, while the original withdrawn history stays intact.
+-- The requester cannot read the helper-held code. Wrong guesses advance a
+-- durable server counter and lock at five attempts; after the test advances
+-- the trusted lock clock, the real code completes the handshake.
 select set_config(
   'request.jwt.claim.sub',
   '80000000-0000-4000-8000-000000000001',
@@ -1047,12 +1089,123 @@ do $$
 declare
   assignment_one uuid := current_setting('test.assignment_one')::uuid;
   assignment_two uuid := current_setting('test.assignment_two')::uuid;
-  completed public.task_assignments;
+  attempt_result jsonb;
+  attempt_number integer;
 begin
-  completed := public.complete_task_assignment(assignment_two);
+  if exists (
+    select 1
+    from public.task_completion_codes
+    where assignment_id = assignment_two
+  ) then
+    raise exception 'task interaction test failed: requester read helper completion code';
+  end if;
 
-  if completed.status <> 'completed' or completed.settled_at is null then
-    raise exception 'task interaction test failed: requester completion did not settle assignment';
+  begin
+    perform public.request_task_completion(assignment_two);
+    raise exception 'task interaction test failed: requester issued their own completion code';
+  exception
+    when insufficient_privilege then
+      if sqlerrm <> 'completion_request_not_allowed' then
+        raise exception 'task interaction test failed: unstable requester code denial: %', sqlerrm;
+      end if;
+  end;
+
+  for attempt_number in 1..5 loop
+    attempt_result := public.confirm_task_completion(assignment_two, '----');
+
+    if coalesce((attempt_result ->> 'ok')::boolean, true)
+      or (attempt_result ->> 'failed_attempts')::integer <> attempt_number
+      or (
+        attempt_number < 5
+        and attempt_result ->> 'error_code' <> 'completion_code_incorrect'
+      )
+      or (
+        attempt_number = 5
+        and (
+          attempt_result ->> 'error_code' <> 'completion_code_locked'
+          or attempt_result ->> 'locked_until' is null
+        )
+      )
+    then
+      raise exception 'task interaction test failed: durable completion attempt % returned %',
+        attempt_number,
+        attempt_result;
+    end if;
+  end loop;
+
+  attempt_result := public.confirm_task_completion(
+    assignment_two,
+    current_setting('test.completion_code')
+  );
+
+  if attempt_result ->> 'error_code' <> 'completion_code_locked'
+    or (attempt_result ->> 'failed_attempts')::integer <> 5
+    or not exists (
+      select 1
+      from public.task_assignments
+      where id = assignment_two
+        and status = 'accepted'
+        and settled_at is null
+    )
+    or exists (
+      select 1
+      from public.tasks
+      where id = '82000000-0000-4000-8000-000000000002'
+        and listing_paused
+    )
+  then
+    raise exception 'task interaction test failed: locked code accepted or settled another guess';
+  end if;
+end;
+$$;
+
+reset role;
+
+-- Simulate expiry of the 15-minute lock without waiting in the regression
+-- suite, then finish through the same requester RPC.
+update public.task_completion_codes
+set locked_until = clock_timestamp() - interval '1 second'
+where assignment_id = current_setting('test.assignment_two')::uuid;
+
+set local role authenticated;
+
+do $$
+declare
+  assignment_one uuid := current_setting('test.assignment_one')::uuid;
+  assignment_two uuid := current_setting('test.assignment_two')::uuid;
+  confirmation jsonb;
+begin
+  confirmation := public.confirm_task_completion(
+    assignment_two,
+    current_setting('test.completion_code')
+  );
+
+  if not coalesce((confirmation ->> 'ok')::boolean, false)
+    or confirmation ->> 'error_code' is not null
+    or confirmation #>> '{assignment,status}' <> 'completed'
+    or not exists (
+      select 1
+      from public.task_assignments
+      where id = assignment_two
+        and status = 'completed'
+        and settled_at is not null
+    )
+    or exists (
+      select 1
+      from public.task_completion_codes
+      where assignment_id = assignment_two
+    )
+    or not exists (
+      select 1
+      from public.task_messages
+      where assignment_id = assignment_two
+        and sender_id = '80000000-0000-4000-8000-000000000001'
+        and kind = 'system'
+        and body = 'Completion was confirmed. This task is closed and the thread is now a read-only record.'
+    )
+  then
+    raise exception 'task interaction test failed: requester code confirmation did not settle assignment: %',
+      confirmation;
   end if;
 
   if not exists (
@@ -1103,7 +1256,8 @@ begin
   from (
     values
       ('task_assignments', 'task_assignments_require_live_auth_session'),
-      ('task_messages', 'task_messages_require_live_auth_session')
+      ('task_messages', 'task_messages_require_live_auth_session'),
+      ('task_completion_codes', 'task_completion_codes_require_live_auth_session')
   ) as expected_policy (table_name, policy_name)
   left join pg_policies as installed_policy
     on installed_policy.schemaname = 'public'
@@ -1133,6 +1287,23 @@ begin
     or has_table_privilege('authenticated', 'public.task_assignments', 'DELETE')
   then
     raise exception 'task interaction test failed: authenticated can mutate assignments directly';
+  end if;
+
+  if not has_table_privilege(
+      'authenticated', 'public.task_completion_codes', 'SELECT'
+    )
+    or has_table_privilege(
+      'authenticated', 'public.task_completion_codes', 'INSERT'
+    )
+    or has_table_privilege(
+      'authenticated', 'public.task_completion_codes', 'UPDATE'
+    )
+    or has_table_privilege(
+      'authenticated', 'public.task_completion_codes', 'DELETE'
+    )
+    or has_table_privilege('anon', 'public.task_completion_codes', 'SELECT')
+  then
+    raise exception 'task interaction test failed: completion code grants are unsafe or incomplete';
   end if;
 
   if has_column_privilege('authenticated', 'public.task_messages', 'sender_id', 'INSERT')
@@ -1181,11 +1352,42 @@ begin
   ) or not has_function_privilege(
     'authenticated', 'public.withdraw_task_assignment(uuid)', 'EXECUTE'
   ) or not has_function_privilege(
+    'authenticated', 'public.cancel_task_assignment(uuid)', 'EXECUTE'
+  ) or not has_function_privilege(
+    'authenticated', 'public.request_task_completion(uuid)', 'EXECUTE'
+  ) or not has_function_privilege(
+    'authenticated', 'public.confirm_task_completion(uuid,text)', 'EXECUTE'
+  ) or has_function_privilege(
     'authenticated', 'public.complete_task_assignment(uuid)', 'EXECUTE'
   ) or has_function_privilege(
     'anon', 'public.accept_task(uuid)', 'EXECUTE'
+  ) or has_function_privilege(
+    'anon', 'public.confirm_task_completion(uuid,text)', 'EXECUTE'
+  ) or has_function_privilege(
+    'service_role', 'public.confirm_task_completion(uuid,text)', 'EXECUTE'
   ) then
     raise exception 'task interaction test failed: RPC execute grants are incorrect';
+  end if;
+
+  if (
+    select count(*)
+    from pg_proc as procedure
+    join pg_namespace as namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'public'
+      and procedure.proname in (
+        'cancel_task_assignment',
+        'request_task_completion',
+        'confirm_task_completion'
+      )
+      and procedure.prosecdef
+      and coalesce(procedure.proconfig, array[]::text[])
+        @> array['search_path=""']
+  ) <> 3
+    or pg_get_function_result(
+      'public.confirm_task_completion(uuid,text)'::regprocedure
+    ) <> 'jsonb'
+  then
+    raise exception 'task interaction test failed: lifecycle RPC authority or return contract changed';
   end if;
 
   if not exists (
@@ -1214,6 +1416,50 @@ begin
       and coalesce(reloptions, array[]::text[]) @> array['security_invoker=true']
   ) then
     raise exception 'task interaction test failed: participant views are not security invoker';
+  end if;
+
+  if not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'task_assignment_details'
+      and column_name = 'completion_requested_at'
+  ) then
+    raise exception 'task interaction test failed: participant view hides completion request state';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'task_completion_codes'
+      and policyname = 'task_completion_codes_helper_reads_own'
+      and lower(cmd) = 'select'
+      and 'authenticated' = any(roles)
+      and position('helper_id' in coalesce(qual, '')) > 0
+      and position('accepted' in coalesce(qual, '')) > 0
+  ) then
+    raise exception 'task interaction test failed: helper-only completion code policy is missing';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_trigger
+    where tgrelid = 'public.task_assignments'::regclass
+      and tgname = 'clear_task_completion_code_on_settlement'
+      and not tgisinternal
+  ) then
+    raise exception 'task interaction test failed: completion code settlement cleanup is missing';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.task_assignments'::regclass
+      and conname = 'task_assignments_status_is_known'
+      and pg_get_constraintdef(oid) like '%canceled%'
+  ) then
+    raise exception 'task interaction test failed: canceled assignment status is not durable';
   end if;
 
   if exists (
@@ -1290,7 +1536,7 @@ begin
       current_setting('test.assignment_one')::uuid,
       current_setting('test.assignment_two')::uuid
     )
-  ) <> 2 then
+  ) <> 6 then
     raise exception 'task interaction test failed: transcript did not survive account deletion';
   end if;
 end;
