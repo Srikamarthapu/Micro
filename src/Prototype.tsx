@@ -49,7 +49,7 @@ import "@fontsource-variable/atkinson-hyperlegible-next";
 import "@fontsource-variable/fraunces";
 import { AdvancedMarker, AdvancedMarkerAnchorPoint, APILoadingStatus, APIProvider, Circle, Map as GoogleMap, useApiLoadingStatus, useMap } from "@vis.gl/react-google-maps";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type SetStateAction } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   BottomSheet,
@@ -826,6 +826,7 @@ function specialJobsFor(pool: Task[], persona: Persona, areaId: AreaId, refusedJ
 function NearbyScreen() {
   const flow = useFlow();
   const keyboard = useKeyboard();
+  const { bottomInset, isKeyboardVisible, keyboardDragging } = useKeyboardInsets();
   const auth = useAuth();
   const { selectedTaskId, setSelectedTaskId, setActiveTab, ownedTasks, remoteTasks, remoteTasksError, collaboration, sponsorFunded, acceptedTaskIds, closedTaskIds, blockedThreadIds, blockedRequesterNames, moderationHolds, persona, youthAge, guardianLinked, accessTermsAccepted, notificationsEnabled, seenSpecialJobIds, refusedJobIds, setRefusedJobIds, profileAreaId: areaId, setProfileAreaId: setAreaId } = useMicro();
   const activeArea = areaById(areaId);
@@ -859,9 +860,18 @@ function NearbyScreen() {
   }, []);
   const [radius, setRadius] = useState<1 | 3>(3);
   const [youthOnly, setYouthOnly] = useState(false);
-  const [sheetSnap, setSheetSnap] = useState<"collapsed" | "half" | "expanded">("half");
-  const dragStartY = useRef<number | null>(null);
+  const [sheetSnap, setSheetSnap] = useState<"open" | "peek">("open");
+  const [sheetOpenHeight, setSheetOpenHeight] = useState(404);
+  const [sheetDragHeight, setSheetDragHeight] = useState<number | null>(null);
+  const [sheetDragging, setSheetDragging] = useState(false);
+  const [sheetAnnouncement, setSheetAnnouncement] = useState("");
+  const nearbyScreenRef = useRef<HTMLDivElement>(null);
+  const sheetDrag = useRef<{ pointerId: number; startY: number; lastY: number; lastTime: number; velocity: number; moved: boolean } | null>(null);
   const sheetDragHandled = useRef(false);
+  const settleSheet = useCallback((next: "open" | "peek") => {
+    setSheetSnap(next);
+    setSheetAnnouncement(next === "peek" ? "Nearby tasks collapsed. Map enlarged." : "Nearby tasks open.");
+  }, []);
   const youthParticipationReady = persona !== "youth" || (youthAge >= 15 && guardianLinked && accessTermsAccepted);
   const taskPool = Array.from(new Map([
     ...collaboration.assignments.filter((assignment) => assignment.status === "accepted" && assignment.task).map((assignment) => assignment.task as Task),
@@ -906,17 +916,34 @@ function NearbyScreen() {
   // sheet opens itself so the address and scope are there without a swipe. It
   // fires on the change of stage, so a sheet you then close stays closed.
   useEffect(() => {
-    if (jobStage === "soon" || jobStage === "now") setSheetSnap("expanded");
-  }, [jobStage]);
+    if (jobStage === "soon" || jobStage === "now") settleSheet("open");
+  }, [jobStage, settleSheet]);
+
+  // The task surface is app chrome rather than page content. Size it from the
+  // actual tab scene so iPhone and Pixel both retain a useful map window.
+  useEffect(() => {
+    const screen = nearbyScreenRef.current;
+    if (!screen) return;
+    const measure = () => setSheetOpenHeight(Math.round(Math.min(500, Math.max(360, screen.clientHeight * 0.55))));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(screen);
+    return () => observer.disconnect();
+  }, []);
+
+  // Searching should never strand the recovery rail behind the keyboard.
+  useEffect(() => {
+    if (isKeyboardVisible) settleSheet("peek");
+  }, [isKeyboardVisible, settleSheet]);
 
   useEffect(() => {
     if (!mapExpanded) return;
-    const shell = mapStageRef.current?.closest(".micro-shell") as HTMLElement | null;
-    if (!shell) return;
-    const measure = () => setExpandedMapHeight(Math.max(0, shell.clientHeight - 62 - 96));
+    const screen = nearbyScreenRef.current;
+    if (!screen) return;
+    const measure = () => setExpandedMapHeight(Math.max(0, screen.clientHeight - 74 - 12));
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(shell);
+    observer.observe(screen);
     return () => observer.disconnect();
   }, [mapExpanded]);
 
@@ -928,6 +955,73 @@ function NearbyScreen() {
   // Filters keeps a restore-all so nothing is hidden irreversibly.
   const refuseJob = (task: Task) => setRefusedJobIds((current) => current.includes(task.id) ? current : [...current, task.id]);
 
+  const sheetPeekHeight = 64;
+  const sheetBottom = isKeyboardVisible ? bottomInset : 0;
+  const sheetHeight = sheetDragHeight ?? (sheetSnap === "open" ? sheetOpenHeight : sheetPeekHeight);
+  const nearbyScreenStyle = {
+    // MobileScroll already shrinks above the simulated keyboard. Reserving the
+    // keyboard inset here a second time would squeeze the map to nothing.
+    "--nearby-sheet-space": `${mapExpanded ? 0 : sheetHeight}px`,
+  } as CSSProperties;
+
+  const selectMapTask = (id: string) => {
+    setSelectedTaskId(id);
+    if (sheetSnap === "peek") settleSheet("open");
+  };
+
+  const beginSheetDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    sheetDragHandled.current = false;
+    sheetDrag.current = { pointerId: event.pointerId, startY: event.clientY, lastY: event.clientY, lastTime: performance.now(), velocity: 0, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveSheetDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = sheetDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    const delta = event.clientY - session.startY;
+    if (!session.moved && Math.abs(delta) < 8) return;
+    event.preventDefault();
+    const now = performance.now();
+    const elapsed = Math.max(1, now - session.lastTime);
+    session.velocity = (event.clientY - session.lastY) / elapsed;
+    session.lastY = event.clientY;
+    session.lastTime = now;
+    session.moved = true;
+    setSheetDragging(true);
+    const startHeight = sheetSnap === "open" ? sheetOpenHeight : sheetPeekHeight;
+    setSheetDragHeight(Math.max(sheetPeekHeight, Math.min(sheetOpenHeight, startHeight - delta)));
+  };
+
+  const finishSheetDrag = (event: ReactPointerEvent<HTMLButtonElement>, cancelled = false) => {
+    const session = sheetDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* Capture may already be released after cancellation. */ }
+    const delta = event.clientY - session.startY;
+    const releaseVelocity = performance.now() - session.lastTime > 120 ? 0 : session.velocity;
+    let next = sheetSnap;
+    if (!cancelled && session.moved) {
+      if (sheetSnap === "open" && (delta > 56 || releaseVelocity > 0.5)) next = "peek";
+      if (sheetSnap === "peek" && (delta < -56 || releaseVelocity < -0.5)) next = "open";
+    }
+    sheetDragHandled.current = session.moved;
+    sheetDrag.current = null;
+    setSheetDragging(false);
+    setSheetDragHeight(null);
+    if (next !== sheetSnap) settleSheet(next);
+  };
+
+  const handleSheetKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowUp" || event.key === "End") {
+      event.preventDefault();
+      settleSheet("open");
+    }
+    if (event.key === "ArrowDown" || event.key === "Home") {
+      event.preventDefault();
+      settleSheet("peek");
+    }
+  };
+
   const openTask = (task: Task) => {
     setSelectedTaskId(task.id);
     keyboard.hide();
@@ -936,8 +1030,10 @@ function NearbyScreen() {
 
   return (
     <>
-      <MobileScroll className="app-screen nearby-scroll">
-        <div className="nearby-page" data-sheet-snap={sheetSnap} data-map-expanded={mapExpanded ? "true" : "false"}>
+      <div ref={nearbyScreenRef} className="nearby-screen" data-sheet-snap={sheetSnap} data-map-expanded={mapExpanded ? "true" : "false"} data-sheet-dragging={sheetDragging ? "true" : "false"} data-keyboard-dragging={keyboardDragging ? "true" : "false"} style={nearbyScreenStyle}>
+        <h1 id="nearby-heading" className="sr-only">Nearby tasks</h1>
+        <MobileScroll className="app-screen nearby-scroll">
+          <div className="nearby-page" data-map-expanded={mapExpanded ? "true" : "false"}>
           <header className="brand-row">
             <button className="location-button" onClick={() => setLocationOpen(true)}>
               <MapPin size={18} weight="fill" aria-hidden="true" />
@@ -967,45 +1063,63 @@ function NearbyScreen() {
           {/* The map owns its own drag gesture, so it opts out of parent scroll dragging. */}
           <section className="map-stage" ref={mapStageRef} style={mapExpanded && expandedMapHeight ? { height: expandedMapHeight } : undefined} data-scroll-drag="ignore" data-fallback={!mapsApiKey || mapUnavailable ? "true" : "false"} aria-label={`Approximate task map for ${activeArea.label}`}>
             {mapsApiKey && !mapUnavailable ? (
-              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={focusedTaskId} exactTaskId={activeCommitment && !activeCommitment.ownerId ? activeCommitment.id : undefined} onSelect={setSelectedTaskId} onUnavailable={reportMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
+              <NearbyMap area={activeArea} tasks={mapTasks} activeTaskId={focusedTaskId} exactTaskId={activeCommitment && !activeCommitment.ownerId ? activeCommitment.id : undefined} onSelect={selectMapTask} onUnavailable={reportMapUnavailable} expanded={mapExpanded} onToggleExpanded={() => setMapExpanded((open) => !open)} />
             ) : null}
             {!mapsApiKey || mapUnavailable ? <div className="map-placeholder" aria-hidden="true" /> : null}
             <div className="approximate-note"><Info size={16} weight="bold" aria-hidden="true" />{!mapsApiKey ? "Preview map needs Maps API configuration" : mapUnavailable || `Preview map · approximate ${privacyRadiusMi} mi area`}</div>
           </section>
 
-          <section className="tasks-sheet" aria-labelledby="nearby-heading">
+          </div>
+        </MobileScroll>
+
+        {!mapExpanded ? <section
+          className="tasks-sheet"
+          aria-labelledby="nearby-heading"
+          data-sheet-snap={sheetSnap}
+          data-sheet-dragging={sheetDragging ? "true" : "false"}
+          style={{ bottom: sheetBottom, height: sheetHeight }}
+        >
             <button
               className="sheet-grabber-button"
               data-scroll-drag="ignore"
-              aria-label={`Task list is ${sheetSnap}. Tap or swipe to resize.`}
+              aria-controls="nearby-task-panel"
+              aria-expanded={sheetSnap === "open"}
+              aria-label={sheetSnap === "peek" ? activeCommitment ? `Show active job and nearby tasks, ${visibleTasks.length} nearby` : `Show nearby tasks, ${visibleTasks.length} nearby` : activeCommitment ? "Collapse active job and nearby tasks to show more map" : "Collapse nearby tasks to show more map"}
               onClick={() => {
                 if (sheetDragHandled.current) { sheetDragHandled.current = false; return; }
-                setSheetSnap((current) => current === "half" ? "expanded" : current === "expanded" ? "collapsed" : "half");
+                settleSheet(sheetSnap === "open" ? "peek" : "open");
               }}
-              onPointerDown={(event) => { dragStartY.current = event.clientY; sheetDragHandled.current = false; event.currentTarget.setPointerCapture(event.pointerId); }}
-              onPointerUp={(event) => {
-                if (dragStartY.current === null) return;
-                const delta = event.clientY - dragStartY.current;
-                if (delta < -24) { sheetDragHandled.current = true; setSheetSnap("expanded"); }
-                if (delta > 24) { sheetDragHandled.current = true; setSheetSnap("collapsed"); }
-                dragStartY.current = null;
-              }}
-              onPointerCancel={() => { dragStartY.current = null; sheetDragHandled.current = false; }}
-            ><span className="sheet-grabber" aria-hidden="true" /></button>
-            {activeCommitment ? <ActiveJobPanel task={activeCommitment} now={browsedAt} /> : null}
-            <div className="tasks-heading-row"><h1 id="nearby-heading">{activeCommitment ? "Other tasks nearby" : "Nearby tasks"}</h1><span>{visibleTasks.length} nearby</span></div>
-            {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
-            {visibleTasks.length && primaryVisibleTask ? (
-              <div className="task-list">
-                <TaskCard task={primaryVisibleTask} selected blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />
-                {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />)}
-              </div>
-            ) : (
-              <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
-            )}
-          </section>
-        </div>
-      </MobileScroll>
+              onKeyDown={handleSheetKeyDown}
+              onPointerDown={beginSheetDrag}
+              onPointerMove={moveSheetDrag}
+              onPointerUp={(event) => finishSheetDrag(event)}
+              onPointerCancel={(event) => finishSheetDrag(event, true)}
+            >
+              <span className="sheet-grabber" aria-hidden="true" />
+              <span className="sheet-peek-content" aria-hidden="true">
+                <span className="sheet-peek-copy"><strong>{activeCommitment ? "Active job & nearby" : "Nearby tasks"}</strong><small>{activeCommitment && jobStage === "now" ? "Start window is open" : activeCommitment && jobStage === "soon" ? "Starting soon" : `${visibleTasks.length} nearby`}</small></span>
+                <CaretDown className="sheet-peek-chevron" size={20} weight="bold" />
+              </span>
+            </button>
+            <div id="nearby-task-panel" className="tasks-sheet-body" aria-hidden={sheetSnap === "peek"} inert={sheetSnap === "peek" ? true : undefined}>
+              <MobileScroll className="nearby-sheet-scroll">
+                <div className="nearby-sheet-content">
+                  {activeCommitment ? <ActiveJobPanel task={activeCommitment} now={browsedAt} /> : null}
+                  {remoteTasksError ? <div className="test-mode-banner" role="status"><Warning size={19} /><span><strong>Listings could not load:</strong> {remoteTasksError}</span></div> : null}
+                  {visibleTasks.length && primaryVisibleTask ? (
+                    <div className="task-list">
+                      <TaskCard task={primaryVisibleTask} selected blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />
+                      {visibleTasks.filter((task) => task.id !== primaryVisibleTask.id).map((task) => <TaskCard key={task.id} task={task} blockedReason={activeCommitment ? "Finish your active job first" : undefined} onOpen={openTask} onRefuse={refuseJob} />)}
+                    </div>
+                  ) : (
+                    <div className="empty-state"><MagnifyingGlass size={28} aria-hidden="true" /><h2>{youthParticipationReady ? "No close matches yet" : "Youth participation is paused"}</h2><p>{youthParticipationReady ? "Try another neighborhood or clear the active filter." : "Youth Mode begins at 15 and requires active terms plus a linked guardian."}</p>{youthParticipationReady ? <button className="text-button" onClick={() => { setMode("all"); setCategories([]); setWhen("any"); setRadius(3); setYouthOnly(false); setAreaId("all"); setSearch(""); }}>Clear filters</button> : null}</div>
+                  )}
+                </div>
+              </MobileScroll>
+            </div>
+          </section> : null}
+        <span className="sr-only" role="status" aria-live="polite">{sheetAnnouncement}</span>
+      </div>
 
       <BottomSheet open={filtersOpen} onOpenChange={setFiltersOpen} title="Filter nearby help" description="Refine the list by mode, one or more categories, time, distance, or youth eligibility." snap={0.78}>
         <div className="sheet-form">
