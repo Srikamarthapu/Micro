@@ -1355,7 +1355,6 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
         {/* Refuse without opening the job: the card leaves the list and stops notifying. */}
         {onRefuse && !isOwnedListing && !unavailable ? <button className="task-refuse-button" aria-label={`Refuse ${task.title}`} onClick={() => onRefuse(task)}><X size={16} weight="bold" aria-hidden="true" /></button> : null}
       </div>
-      {task.customPending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       {isPreviewExample ? <p className="review-flag"><Info size={14} weight="fill" /> Preview example · interactions stay local</p> : null}
       <div className="task-heading-pay">
         <h2>{task.title}</h2>
@@ -1411,11 +1410,163 @@ function makeTaskScreen(task: Task): FlowScreen {
     id: `task-${task.id}`,
     headerHeight: 66,
     header: (flow) => <RouteHeader title="Task details" onBack={flow.pop} right={<ShieldCheck size={21} weight="fill" aria-label="Protected task details" />} />,
-    render: (flow) => <TaskDetailScreen task={task} onDone={flow.pop} />,
+    render: (flow) => <TaskDetailScreen task={task} onDone={flow.pop} onManage={() => flow.push(makeManageListingScreen(task))} />,
   };
 }
 
-function TaskDetailScreen({ task, onDone }: { task: Task; onDone: () => void }) {
+function makeManageListingScreen(task: Task): FlowScreen {
+  return {
+    id: `manage-${task.id}`,
+    headerHeight: 66,
+    header: (flow) => <RouteHeader title="Manage listing" onBack={flow.pop} />,
+    render: (flow) => <ManageListingScreen task={task} onDone={flow.pop} />,
+  };
+}
+
+/**
+ * What a requester can still change about their own listing, and how to take it
+ * down. Scope, title, and duration are deliberately absent: those come from the
+ * reviewed catalog entry, so changing them means posting a different task
+ * rather than quietly rewriting one neighbors may already have read.
+ */
+function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void }) {
+  const auth = useAuth();
+  const { setOwnedTasks, setActiveTab, setSelectedTaskId, refreshRemoteTasks, acceptedTaskIds } = useMicro();
+  const keyboard = useKeyboard();
+  const now = useMemo(() => new Date(), []);
+  const [dateChoice, setDateChoice] = useState(() => task.time.split(" · ")[0] ?? "Tomorrow");
+  const [startTime, setStartTime] = useState(() => task.time.split(" · ")[1] ?? "10:00 AM");
+  const [amount, setAmount] = useState(String(task.earning ?? 0));
+  const [address, setAddress] = useState(task.privateAddress ?? "");
+  // What the address was when the screen opened. Compared against rather than
+  // `task.privateAddress`, which a remote listing never carries — otherwise
+  // simply loading the stored address would register as an edit.
+  const [savedAddress, setSavedAddress] = useState(task.privateAddress ?? "");
+  const [addressLoaded, setAddressLoaded] = useState(!task.ownerId);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const paused = Boolean(task.listingPaused);
+  const isRemote = Boolean(task.ownerId);
+  const accepted = acceptedTaskIds.includes(task.id);
+  const dateChoices = useMemo(() => dateChoicesFor(now), [now]);
+  const timeSlots = useMemo(() => (dateChoice === "Today" ? slotsRemainingToday(now) : startTimeSlots), [dateChoice, now]);
+  const start = startMoment(now, dateChoice, startTime);
+  const timeLabel = start ? startLabel(now, start, startTime) : `${dateChoice} · ${startTime}`;
+  const changed = timeLabel !== task.time || Number(amount) !== (task.earning ?? 0) || address !== savedAddress;
+
+  // A listing row never carries the address — it lives in an owner-only table
+  // — so editing one has to read it back rather than show an empty field that
+  // would look like the address had been lost.
+  useEffect(() => {
+    if (!task.ownerId || !supabase) return;
+    let live = true;
+    void supabase
+      .from("task_private_details")
+      .select("private_address")
+      .eq("task_id", task.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!live) return;
+        if (data?.private_address) { setAddress(String(data.private_address)); setSavedAddress(String(data.private_address)); }
+        setAddressLoaded(true);
+      });
+    return () => { live = false; };
+  }, [task.id, task.ownerId]);
+
+  const applyLocally = (patch: Partial<Task>) =>
+    setOwnedTasks((current) => current.map((listing) => (listing.id === task.id ? { ...listing, ...patch } : listing)));
+
+  const save = async () => {
+    keyboard.hide();
+    setBusy(true);
+    setError("");
+    const patch: Partial<Task> = { time: timeLabel, startsAt: start, earning: task.mode === "community" ? undefined : Number(amount), privateAddress: address };
+    if (isRemote && supabase) {
+      const { error: updateError } = await supabase
+        .from("tasks")
+        .update({ time_label: timeLabel, earning: task.mode === "community" ? null : Number(amount) })
+        .eq("id", task.id);
+      if (updateError) { setBusy(false); setError(updateError.message); return; }
+      // The address lives in its own owner-only table, so it is written apart
+      // from the listing row and only when it actually changed.
+      if (address !== savedAddress) {
+        const stored = await supabase.from("task_private_details").update({ private_address: address.trim() }).eq("task_id", task.id);
+        if (stored.error) { setBusy(false); setError(stored.error.message); return; }
+      }
+      await refreshRemoteTasks();
+    }
+    applyLocally(patch);
+    setSavedAddress(address);
+    setBusy(false);
+    setSaved(true);
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError("");
+    if (isRemote && supabase) {
+      // The private address goes first: a listing row that outlived its address
+      // would leave a matched helper with nowhere to go.
+      await supabase.from("task_private_details").delete().eq("task_id", task.id);
+      const { error: deleteError } = await supabase.from("tasks").delete().eq("id", task.id);
+      if (deleteError) { setBusy(false); setError(deleteError.message); return; }
+      await refreshRemoteTasks();
+    }
+    setOwnedTasks((current) => current.filter((listing) => listing.id !== task.id));
+    setBusy(false);
+    setSelectedTaskId("");
+    setActiveTab("nearby");
+    onDone();
+  };
+
+  return (
+    <div className="route-screen">
+      <MobileScroll className="app-screen route-scroll">
+        <div className="route-page route-bottom-pad">
+          <div className="activity-hero"><div className="status-badge">{paused ? <Warning size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />} {paused ? "Paused" : "Published"}</div><h1>{task.title}</h1><p>{task.area} shown approximately · {task.duration}</p></div>
+
+          {accepted ? <div className="truth-card custom-truth" role="status"><Warning size={22} weight="fill" /><div><strong>Someone has accepted this task</strong><span>Changing the time or pay now would move the goalposts on a helper who already said yes. Use the task thread instead.</span></div></div> : null}
+
+          <section className="form-section manage-section">
+            <label className="field-label-block">When
+              <div className="segmented-row" data-choices={dateChoices.length}>{dateChoices.map((value) => <button key={value} aria-pressed={dateChoice === value} data-active={dateChoice === value ? "true" : "false"} onClick={() => { keyboard.hide(); setSaved(false); setDateChoice(value); }}>{value}</button>)}</div>
+            </label>
+            {dateChoice !== "Flexible" ? <Carousel ariaLabel="Start time" className="time-rail" contentClassName="time-rail-track">
+              {timeSlots.map((slot) => <button key={slot} className="time-chip" aria-pressed={startTime === slot} data-active={startTime === slot ? "true" : "false"} onClick={() => { keyboard.hide(); setSaved(false); setStartTime(slot); }}>{slot}</button>)}
+            </Carousel> : null}
+            {task.mode !== "community" ? <label className="field-label-block">Helper receives<div className="money-field"><CurrencyDollar size={21} /><KeyboardInput value={amount} inputMode="numeric" onChange={(event) => { setSaved(false); setAmount(event.target.value.replace(/\D/g, "")); }} onBlur={() => keyboard.hide()} /></div></label> : null}
+            <label className="field-label-block">Private match address<KeyboardInput value={address} placeholder={addressLoaded ? "" : "Loading…"} onChange={(event) => { setSaved(false); setAddress(event.target.value); }} onBlur={() => keyboard.hide()} /></label>
+            <p className="fine-print">Scope, title, and duration come from the reviewed catalog entry. To change those, post the task you actually need instead.</p>
+            {error ? <p className="form-error" role="alert">{error}</p> : null}
+            {saved ? <div className="status-receipt" role="status"><CheckCircle size={18} weight="fill" /> Listing updated{isRemote ? " for every neighbor" : " in this local session"}.</div> : null}
+            <button className="primary-button" disabled={!changed || busy || !addressLoaded || !address.trim()} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
+          </section>
+
+          <section className="form-section manage-section">
+            <button className="secondary-button" onClick={() => { setSelectedTaskId(task.id); setActiveTab("nearby"); onDone(); }}>See it in Nearby <ArrowRight size={18} /></button>
+            <button className="secondary-button" onClick={() => applyLocally({ listingPaused: !paused })}>{paused ? "Resume listing" : "Pause listing"}</button>
+            <p className="fine-print">{paused ? "Paused listings stay yours but never appear in Nearby." : "Pausing hides it from Nearby without deleting it."}</p>
+          </section>
+
+          {confirmingDelete ? (
+            <section className="cancellation-card">
+              <strong>Delete this listing?</strong>
+              <p>{isRemote ? "It is removed for every neighbor, along with the private address stored with it. This cannot be undone." : "It is removed from this local session. This cannot be undone."}</p>
+              <button className="danger-button" disabled={busy} onClick={remove}>{busy ? "Deleting…" : "Delete permanently"}</button>
+              <button className="text-button" onClick={() => setConfirmingDelete(false)}>Keep the listing</button>
+            </section>
+          ) : (
+            <button className="quiet-action route-quiet-action" onClick={() => setConfirmingDelete(true)}><Warning size={18} /> Delete this listing</button>
+          )}
+        </div>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function TaskDetailScreen({ task, onDone, onManage }: { task: Task; onDone: () => void; onManage: () => void }) {
   const auth = useAuth();
   const { setActiveTab, setPaidStage, setActiveTask, setCommunityTask, setCommunityStage, setCommunityChecks, acceptedTaskIds, setAcceptedTaskIds, setAcceptedTaskActors, setTaskEvents, setActivityPerspective, persona, youthApprovedTaskId, setYouthApprovedTaskId, setYouthApprovalTaskId, setGuardianSupervisedTaskId, setGuardianSupervisionStatus, accessTermsAccepted, guardianLinked, youthAge, blockedRequesterNames, savedTaskIds, setSavedTaskIds, reportedTaskIds, setReportedTaskIds, setReportReasons, moderationHolds, setModerationHolds, refusedJobIds, setRefusedJobIds } = useMicro();
   const { collaboration } = useMicro();
@@ -1923,7 +2074,7 @@ function PostScreen() {
                   <span className="category-tile-icon"><NotePencil size={22} weight="duotone" /></span>
                   <div><strong>Describe the task</strong><small>For work the catalog does not carry yet.</small></div>
                 </div>
-                <div className="boundary-note custom-warning"><Warning size={20} weight="fill" /><span>Catalog tasks are checked for scope and safety before neighbors see them. A task you write yourself is not, so it publishes marked for review and still has to stay inside the safety boundary of the category you pick.</span></div>
+                <div className="boundary-note custom-warning"><Warning size={20} weight="fill" /><span>Catalog tasks are checked for scope and safety before neighbors see them. A task you write yourself is not, so keep it plain and inside the safety boundary of the category you pick — it goes live to neighbors straight away.</span></div>
                 <label className="field-label-block">Task title<KeyboardInput value={customTitle} maxLength={60} onChange={(event) => setField("customTitle", event.target.value)} onBlur={() => keyboard.hide()} placeholder="Short and plain" /></label>
                 <label className="field-label-block">What should the helper do?<KeyboardTextarea rows={4} value={customDetails} maxLength={300} onChange={(event) => setField("customDetails", event.target.value)} onBlur={() => keyboard.hide()} placeholder="What the work is, what is provided, and where it happens." /></label>
                 <fieldset className="choice-fieldset"><legend>Closest category</legend><div className="category-grid">{catalogCategories.map((entry) => {
@@ -2092,7 +2243,7 @@ function PostScreen() {
             <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
             <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea}</strong><small>{modeMeta[mode].label} · {template.category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{template.youthEligible ? "Adults and Youth Mode helpers" : "Adults only"}</strong><small>Set by the task you picked, not by the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
             {template.isCustom
-              ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so it publishes marked for review. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
+              ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so neighbors read your wording as written. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
               : <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>}
             <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid || publishing} onClick={publish}>{publishing ? "Publishing…" : "Publish task"}</button></div>
             {publishError ? <p className="form-error" role="alert">{publishError}</p> : null}
@@ -2109,7 +2260,6 @@ function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 1
   return (
     <article className="task-card preview-card" data-mode={mode} data-selected="true">
       <div className="task-card-top"><span className="task-icon"><TaskIcon size={23} weight="bold" /></span><div className="task-title-block"><div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[mode].label}</div><h2>{title}</h2></div>{mode !== "community" ? <div className="earning"><strong>${amount || "0"}</strong><span>You earn</span></div> : null}</div>
-      {pending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       <p className="task-description">{details}</p>
       <div className="task-facts"><span><MapPin size={17} /> {area}</span><span><CalendarBlank size={17} /> {time}</span><span><Clock size={17} /> {duration}</span></div>
     </article>

@@ -160,6 +160,33 @@ export function MicroProvider({ children }: { children: ReactNode }) {
     void refreshRemoteTasks();
   }, [refreshRemoteTasks]);
 
+  // A listing published on another device has to arrive here on its own. Without
+  // this, a window only ever sees the listings that existed when it signed in.
+  const accessToken = auth.session?.access_token ?? null;
+  const refreshRef = useRef(refreshRemoteTasks);
+  refreshRef.current = refreshRemoteTasks;
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !signedInUserId || !accessToken) return;
+    client.realtime.setAuth(accessToken);
+    const channel = client
+      .channel(`micro-listings-${signedInUserId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
+        void refreshRef.current();
+      })
+      .subscribe();
+    // Realtime can be disabled per table in the dashboard, so returning to the
+    // tab re-reads as well rather than trusting the socket alone.
+    const onFocus = () => { if (document.visibilityState === "visible") void refreshRef.current(); };
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      void client.removeChannel(channel);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [signedInUserId, accessToken]);
+
   const collaboration = useCollaboration(signedInUserId, auth.session?.access_token ?? null);
   const refreshCollaboration = collaboration.refresh;
 
