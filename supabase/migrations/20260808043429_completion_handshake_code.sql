@@ -1,7 +1,7 @@
 -- Finishing a job is a handshake, not a claim.
 --
 -- Completion used to be one unilateral tap by the requester, which meant the
--- person who owed the money decided alone whether the work happened. This
+-- person requesting the work decided alone whether the work happened. This
 -- replaces it with the pattern a rider and driver already use: the helper says
 -- they are finished and receives a four-digit code, and the task closes only
 -- when the requester types that code in. Neither side can finish it alone.
@@ -48,6 +48,7 @@ using (
     from public.task_assignments as assignment
     where assignment.id = task_completion_codes.assignment_id
       and assignment.helper_id = (select auth.uid())
+      and assignment.status = 'accepted'
   )
 );
 
@@ -140,21 +141,26 @@ revoke all on function public.request_task_completion(uuid)
 grant execute on function public.request_task_completion(uuid)
   to authenticated;
 
--- The requester types the code. It is compared inside the database and never
--- sent back out, so a wrong guess reveals only that it was wrong.
+-- The requester types the code. Expected wrong/locked outcomes are structured
+-- results rather than exceptions: raising after an attempt update would roll
+-- that update back and make the five-try ceiling ineffective.
 create or replace function public.confirm_task_completion(
   p_assignment_id uuid,
   p_code text
 )
-returns public.task_assignments
+returns jsonb
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
   caller_id uuid := auth.uid();
+  request_time timestamptz := clock_timestamp();
+  subject_task_id uuid;
   subject_assignment public.task_assignments;
   stored public.task_completion_codes;
+  next_failed_attempts integer;
+  next_locked_until timestamptz;
 begin
   if caller_id is null
     or coalesce(auth.jwt() ->> 'is_anonymous', 'false') = 'true'
@@ -167,12 +173,36 @@ begin
       message = 'live_authenticated_session_required';
   end if;
 
-  -- Same lock order as every other settling path: acting user, task, then
-  -- assignment, so two exits taken at once cannot deadlock.
-  perform 1
+  select assignment.task_id
+  into subject_task_id
+  from public.task_assignments as assignment
+  where assignment.id = p_assignment_id;
+
+  if not found then
+    raise no_data_found using message = 'assignment_not_found';
+  end if;
+
+  -- Match cancellation and withdrawal exactly: actor, task, assignment. This
+  -- avoids the assignment -> task / task -> assignment deadlock in concurrent
+  -- settling calls.
+  perform confirming_user.id
   from auth.users as confirming_user
   where confirming_user.id = caller_id
   for key share;
+
+  if not found then
+    raise insufficient_privilege using
+      message = 'live_authenticated_session_required';
+  end if;
+
+  perform task.id
+  from public.tasks as task
+  where task.id = subject_task_id
+  for update;
+
+  if not found then
+    raise no_data_found using message = 'assignment_task_not_found';
+  end if;
 
   select assignment.*
   into subject_assignment
@@ -184,17 +214,16 @@ begin
     raise no_data_found using message = 'assignment_not_found';
   end if;
 
+  if subject_assignment.task_id is distinct from subject_task_id then
+    raise serialization_failure using message = 'assignment_task_changed';
+  end if;
+
   if subject_assignment.status <> 'accepted'
     or subject_assignment.requester_id <> caller_id
   then
     raise insufficient_privilege using
       message = 'completion_confirmation_not_allowed';
   end if;
-
-  perform 1
-  from public.tasks as task
-  where task.id = subject_assignment.task_id
-  for update;
 
   select code_row.*
   into stored
@@ -206,40 +235,81 @@ begin
     raise check_violation using message = 'completion_not_requested_yet';
   end if;
 
-  if stored.locked_until is not null and stored.locked_until > now() then
-    raise check_violation using message = 'completion_code_locked';
+  if stored.locked_until is not null and stored.locked_until > request_time then
+    return jsonb_build_object(
+      'ok', false,
+      'error_code', 'completion_code_locked',
+      'failed_attempts', stored.failed_attempts,
+      'locked_until', stored.locked_until
+    );
   end if;
 
   if stored.code is distinct from btrim(coalesce(p_code, '')) then
+    next_failed_attempts := stored.failed_attempts + 1;
+    next_locked_until := case
+      when next_failed_attempts >= 5
+        then request_time + interval '15 minutes'
+      else null
+    end;
+
     update public.task_completion_codes
-    set failed_attempts = failed_attempts + 1,
-        locked_until = case
-          when failed_attempts + 1 >= 5 then now() + interval '15 minutes'
-          else locked_until
-        end
+    set
+      failed_attempts = next_failed_attempts,
+      locked_until = next_locked_until
     where assignment_id = p_assignment_id;
 
-    raise check_violation using message = 'completion_code_incorrect';
+    return jsonb_build_object(
+      'ok', false,
+      'error_code', case
+        when next_locked_until is not null then 'completion_code_locked'
+        else 'completion_code_incorrect'
+      end,
+      'failed_attempts', next_failed_attempts,
+      'locked_until', next_locked_until
+    );
   end if;
 
   update public.tasks
   set listing_paused = true
-  where id = subject_assignment.task_id;
+  where id = subject_task_id;
 
   update public.task_assignments
-  set status = 'completed', settled_at = now()
+  set status = 'completed', settled_at = request_time
   where id = p_assignment_id
   returning * into subject_assignment;
 
-  return subject_assignment;
+  insert into public.task_messages (
+    assignment_id,
+    sender_id,
+    client_nonce,
+    body,
+    kind
+  )
+  values (
+    p_assignment_id,
+    caller_id,
+    gen_random_uuid(),
+    'Completion was confirmed. This task is closed and the thread is now a read-only record.',
+    'system'
+  );
+
+  -- The one-time code has no purpose after the assignment closes.
+  delete from public.task_completion_codes
+  where assignment_id = p_assignment_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'error_code', null,
+    'assignment', to_jsonb(subject_assignment)
+  );
 end;
 $$;
 
 comment on function public.confirm_task_completion(uuid, text) is
-  'Requester-only. Closes the match when the typed code matches the helper''s. The code is compared in the database and never returned.';
+  'Requester-only completion confirmation. Returns {ok,error_code,...}; expected wrong or locked codes are results so rate-limit state commits.';
 
 revoke all on function public.confirm_task_completion(uuid, text)
-  from public, anon, service_role;
+  from public, anon, authenticated, service_role;
 grant execute on function public.confirm_task_completion(uuid, text)
   to authenticated;
 
@@ -266,13 +336,19 @@ begin
   from public.profiles as profile
   where profile.id = new.helper_id;
 
-  insert into public.task_messages (assignment_id, sender_id, client_nonce, body, kind)
+  insert into public.task_messages (
+    assignment_id,
+    sender_id,
+    client_nonce,
+    body,
+    kind
+  )
   values (
     new.id,
     new.helper_id,
     gen_random_uuid(),
     format(
-      '%s marked this job finished and has a four-digit code. Ask for it and enter it on the task to release payment and close the job.',
+      '%s marked this task finished and has a four-digit code. Ask for it and enter it on the task to confirm the work and close this activity.',
       coalesce(helper_name, 'The helper')
     ),
     'system'
@@ -283,7 +359,7 @@ end;
 $$;
 
 comment on function private_authorization.announce_completion_request() is
-  'Posts the system line telling the requester a completion code is waiting.';
+  'Posts the system line telling the requester a completion code is waiting, without claiming a payment capability.';
 
 revoke all on function private_authorization.announce_completion_request()
   from public, anon, authenticated, service_role;
@@ -294,3 +370,61 @@ create trigger announce_completion_request
   for each row
   when (old.completion_requested_at is null and new.completion_requested_at is not null)
   execute function private_authorization.announce_completion_request();
+
+-- The participant view predates completion_requested_at. Recreate it with the
+-- same security-invoker boundary so requesters can see that a code is waiting
+-- without gaining access to the helper-only code table.
+create or replace view public.task_assignment_details
+with (security_invoker = true) as
+  select
+    assignment.id,
+    assignment.task_id,
+    assignment.requester_id,
+    assignment.helper_id,
+    assignment.task_title,
+    assignment.status,
+    assignment.created_at,
+    assignment.settled_at,
+    coalesce(requester.display_name, 'Deleted neighbor') as requester_name,
+    coalesce(helper.display_name, 'Deleted neighbor') as helper_name,
+    assignment.completion_requested_at
+  from public.task_assignments as assignment
+  left join public.profiles as requester
+    on requester.id = assignment.requester_id
+  left join public.profiles as helper
+    on helper.id = assignment.helper_id;
+
+revoke all on public.task_assignment_details
+  from public, anon, authenticated;
+grant select on public.task_assignment_details to authenticated;
+grant select on public.task_assignment_details to service_role;
+
+-- A completion code is useful only while the match is active. Cancellation,
+-- withdrawal, or confirmation removes it in the same settlement transaction.
+create or replace function private_authorization.clear_task_completion_code()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  delete from public.task_completion_codes
+  where assignment_id = new.id;
+
+  return new;
+end;
+$$;
+
+comment on function private_authorization.clear_task_completion_code() is
+  'Deletes the one-time helper code whenever an accepted assignment settles.';
+
+revoke all on function private_authorization.clear_task_completion_code()
+  from public, anon, authenticated, service_role;
+
+drop trigger if exists clear_task_completion_code_on_settlement
+  on public.task_assignments;
+create trigger clear_task_completion_code_on_settlement
+  after update of status on public.task_assignments
+  for each row
+  when (old.status = 'accepted' and new.status <> 'accepted')
+  execute function private_authorization.clear_task_completion_code();

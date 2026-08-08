@@ -8,10 +8,10 @@ Micro is a warm, trust-first mobile prototype for arranging small neighborhood t
 - Detailed task scope, exclusions, completion criteria, requester trust, fair-pay totals, privacy-safe media, save, and report states.
 - A four-step posting flow that opens on the task catalog: find one of 200 reviewed tasks, answer its bounded options, set arrangement/time/place/pay, and review the composed listing.
 - Role-aware Activity journeys for start PINs, completion evidence, requester confirmation, simulated payout, cancellations, no-shows, support pauses, service hours, and structured reviews.
-- Protected task threads with immutable lifecycle records, local messaging, reporting, blocking, and review-only youth/guardian states.
+- Protected task threads with immutable lifecycle records, participant-only live messaging, cross-device unread state, and read-only settled history. Reporting and blocking remain preview-only safety controls.
 - Adult, youth, and guardian fixtures with task-specific approval, age/consent gates, persona-isolated records, and shared safety holds where roles overlap.
 - Live Supabase email authentication for regular neighbors and nonprofit representatives, protected account profiles, organization membership, verification state, password recovery, and database-derived sponsorship permissions.
-- Live signed-in task publishing with owner-only private addresses, plus server-verified self-service account deletion with recent password confirmation and organization-owner safeguards.
+- Live signed-in task publishing and trusted listing management with owner-only private addresses, plus server-verified self-service account deletion with recent password confirmation and organization-owner safeguards.
 - Responsive iPhone and Pixel 10 frames using the protected mobile runtime.
 
 ## Current redesign direction
@@ -67,7 +67,7 @@ VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 ```
 
-Apply the SQL files in `supabase/migrations/` in filename order. They create RLS-protected profiles, organizations, memberships, public-safe task listings, owner-only private addresses, and database-derived capability gates. Authenticated database access also requires the JWT's `session_id` to match a live Supabase Auth session, so revoked or deleted-account tokens fail closed before their normal JWT expiry.
+Apply the SQL files in `supabase/migrations/` in filename order. They create RLS-protected profiles, organizations, memberships, public-safe task listings, owner-only private addresses, atomic task assignments, participant-only messages and read cursors, trusted listing mutations, and database-derived capability gates. Authenticated database access also requires the JWT's `session_id` to match a live Supabase Auth session, so revoked or deleted-account tokens fail closed before their normal JWT expiry.
 
 Deploy `supabase/functions/delete-account/` with JWT verification enabled. The function accepts only `{"confirmation":"DELETE"}`, verifies the live Auth user, requires a password authentication from the last five minutes, and derives the deletion target from that verified user. It never accepts a user ID or password in its request body. Never put a service-role key, database password, JWT secret, or connection string in a `VITE_*` variable.
 
@@ -83,4 +83,4 @@ npm run test:runtime
 
 ## Prototype boundary
 
-Supabase authentication, protected account profiles, account types, organization membership, database-derived sponsorship permissions, signed-in task listings, private task addresses, and account deletion are live when the project variables, migrations, and Edge Function are configured. Google Maps can provide the basemap when its browser key and Map ID are configured. Fixture map markers, task matching and acceptance, youth/guardian personas, identity verification, payments, push notifications, messaging, sponsorship requests, moderation, and storage remain local fixtures or deferred services. Any selected profile photo is a browser-local preview with an explicit fallback; it is not uploaded, synced, moderated, or permanently stored. The UI labels these boundaries directly.
+Supabase authentication, protected account profiles, account types, organization membership, database-derived sponsorship permissions, signed-in task listings, private task addresses, task acceptance, participant messaging, cross-device thread read state, listing management, and account deletion are live when the project variables, migrations, and Edge Function are configured. Google Maps can provide the basemap when its browser key and Map ID are configured. Fixture map markers, youth/guardian personas, identity verification, payments, push notifications, sponsorship requests, moderation, storage, and message block/report enforcement remain local fixtures or deferred services. Any selected profile photo is a browser-local preview with an explicit fallback; it is not uploaded, synced, moderated, or permanently stored. The UI labels these boundaries directly.

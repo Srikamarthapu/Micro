@@ -82,7 +82,7 @@ import {
 import { supabase } from "./supabase";
 import { areaById, areaForPoint, areas, locateAddress, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, readDeviceLocation, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
 import { agoLabel, arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
-import { type CollaborationState, type TaskAssignment } from "./micro/collaboration";
+import { type CollaborationState, type TaskAssignment, type TaskMessage, type TaskThreadReadCursor } from "./micro/collaboration";
 import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
 import { initialPostDraft, modeMeta, pastThreadTasks, sponsoredFixtureTask, tasks } from "./micro/fixtures";
 import { AuthProvider, initialsFromName, useAuth, type AuthContextValue } from "./micro/AuthProvider";
@@ -720,20 +720,37 @@ function MicroShell() {
   );
 }
 
-/** Messages from the other side that arrived after you last opened that thread. */
+/** Incoming messages that follow the exact server cursor this account last read. */
+function unreadMessagesAfterCursor(messages: TaskMessage[], cursor: TaskThreadReadCursor | undefined, myId: string | null) {
+  let candidates = messages;
+  if (cursor) {
+    const cursorIndex = messages.findIndex((message) => message.id === cursor.lastReadMessageId);
+    if (cursorIndex >= 0) {
+      candidates = messages.slice(cursorIndex + 1);
+    }
+    // The client keeps the newest page. If the FK-protected cursor ID is not
+    // inside it, that cursor is older than every loaded row, so all loaded
+    // messages are candidates. Server receipt time is intentionally ignored:
+    // a stale device may mark an old message today.
+  }
+  // Database-authored lifecycle lines keep the initiating participant as
+  // sender_id. Count them for the other person, but never badge someone for
+  // their own completion/cancellation/withdrawal event.
+  return candidates.filter((message) => message.senderId !== myId);
+}
+
+/** Messages from the other side that arrived after this account's server cursor. */
 function useUnreadMessageCount() {
   const auth = useAuth();
-  const { collaboration, threadReadAt } = useMicro();
+  const { collaboration } = useMicro();
   const myId = auth.session?.user.id ?? null;
   return useMemo(() => {
     let total = 0;
-    // Keys match the thread list exactly, so the badge and the row agree.
     for (const [assignmentId, messages] of Object.entries(collaboration.messagesByAssignment)) {
-      const readAt = threadReadAt[`assignment-${assignmentId}`] ?? 0;
-      total += messages.filter((m) => m.kind === "human" && m.senderId !== myId && Date.parse(m.createdAt) > readAt).length;
+      total += unreadMessagesAfterCursor(messages, collaboration.readCursorsByAssignment[assignmentId], myId).length;
     }
     return total;
-  }, [collaboration.messagesByAssignment, myId, threadReadAt]);
+  }, [collaboration.messagesByAssignment, collaboration.readCursorsByAssignment, myId]);
 }
 
 function BottomNav() {
@@ -741,11 +758,10 @@ function BottomNav() {
   const unreadMessages = useUnreadMessageCount();
   const keyboard = useKeyboard();
   const reduceMotion = useReducedMotion();
-  // Activity lives inside Profile now, so it keeps Profile lit while it is open
-  // instead of owning a rail slot of its own.
   const items: Array<{ id: TabId; label: string; icon: Icon }> = [
     { id: "nearby", label: "Nearby", icon: MapPin },
     { id: "post", label: "Post", icon: Plus },
+    { id: "activity", label: "Activity", icon: Bell },
     { id: "messages", label: "Messages", icon: ChatCircle },
     { id: "profile", label: "Profile", icon: UserCircle },
   ];
@@ -754,7 +770,7 @@ function BottomNav() {
     <nav className="bottom-nav" aria-label="Primary">
       <div className="bottom-nav-rail">
         {items.map(({ id, label, icon: NavIcon }) => {
-          const isActive = activeTab === id || (id === "profile" && activeTab === "activity");
+          const isActive = activeTab === id;
           return (
             <button
               key={id}
@@ -1256,9 +1272,15 @@ function TaskAreaCircle({ task, active }: { task: Task; active: boolean }) {
 }
 
 function MapTaskPin({ task, active, exact = false, size, onSelect }: { task: Task; active: boolean; exact?: boolean; size: "compact" | "regular" | "full"; onSelect: (id: string) => void }) {
-  const { profilePhotos } = useMicro();
+  const auth = useAuth();
+  const { persona, profilePhotos } = useMicro();
   const detail = getTaskDetails(task);
   const labelValue = task.earning ? `$${task.earning}` : "Volunteer";
+  // A browser-only photo can decorate this account's own live marker without
+  // being uploaded or leaking into another account's task rows.
+  const markerPhoto = task.ownerId && task.ownerId === auth.session?.user.id
+    ? profilePhotos[persona] || detail.avatar
+    : taskAvatar(task, profilePhotos);
   return (
     <AdvancedMarker
       position={exact ? task.coords : approximateCoords(task)}
@@ -1276,7 +1298,7 @@ function MapTaskPin({ task, active, exact = false, size, onSelect }: { task: Tas
         role="button"
         aria-label={exact ? `${detail.requester}: ${task.title}, your accepted job at ${detail.address}` : `${detail.requester}: ${task.title}, ${modeMeta[task.mode].label}`}
       >
-        <span className="map-avatar-bubble"><PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} size={active ? "pin-active" : "pin"} label={`${detail.requester} profile photo`} /><span className="map-mode-dot" aria-hidden="true" /></span>
+        <span className="map-avatar-bubble"><PersonAvatar src={markerPhoto} initials={detail.initials} size={active ? "pin-active" : "pin"} label={`${detail.requester} profile photo`} /><span className="map-mode-dot" aria-hidden="true" /></span>
         {active || exact ? <span className="map-pin-label"><strong>{exact ? "Your job" : detail.requester.split(" ")[0]}</strong><small>{labelValue}</small></span> : null}
       </span>
     </AdvancedMarker>
@@ -1309,7 +1331,7 @@ function jobStageFor(task: Task, now: Date): JobStage {
 function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
   const flow = useFlow();
   const auth = useAuth();
-  const { setActiveTab, setSelectedTaskId, profilePhotos, refreshRemoteTasks, collaboration } = useMicro();
+  const { setActiveTab, setSelectedTaskId, refreshRemoteTasks, collaboration } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
   // The same job reads differently from each side: one person is doing the work
@@ -1342,7 +1364,7 @@ function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
       ) : (
         <>
           <div className="active-job-person">
-            <PersonAvatar src={taskAvatar(task, profilePhotos)} initials={detail.initials} label={`${counterpartName} profile photo`} />
+            <PersonAvatar initials={initialsFromName(counterpartName)} label={`${counterpartName} initials`} />
             <span><strong>{counterpartName}</strong><small>{iAmRequester ? "Helping with your task" : detail.trust}</small></span>
             <button className="active-job-message" aria-label={`Message ${counterpartName}`} onClick={() => setActiveTab("messages")}><ChatCircle size={20} weight="fill" aria-hidden="true" /></button>
           </div>
@@ -1397,6 +1419,7 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
         <span aria-hidden="true">·</span>
         <strong>{task.mode === "community" ? "Volunteer" : "Fair pay"}</strong>
       </div>
+      {task.customPending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       {blockedReason && !unavailable && !isOwnedListing ? <p className="review-flag blocked-flag"><Warning size={14} weight="fill" /> {blockedReason}</p> : null}
       <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button>
       {/* Prototype only: there is no second account to post from, so a listing
@@ -1458,7 +1481,7 @@ function makeManageListingScreen(task: Task): FlowScreen {
  * rather than quietly rewriting one neighbors may already have read.
  */
 function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void }) {
-  const { setOwnedTasks, setActiveTab, setSelectedTaskId, refreshRemoteTasks, acceptedTaskIds } = useMicro();
+  const { setOwnedTasks, setActiveTab, setSelectedTaskId, refreshRemoteTasks, acceptedTaskIds, collaboration } = useMicro();
   const keyboard = useKeyboard();
   const now = useMemo(() => new Date(), []);
   const [dateChoice, setDateChoice] = useState(() => task.time.split(" · ")[0] ?? "Tomorrow");
@@ -1474,9 +1497,9 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  const paused = Boolean(task.listingPaused);
+  const [paused, setPaused] = useState(Boolean(task.listingPaused));
   const isRemote = Boolean(task.ownerId);
-  const accepted = acceptedTaskIds.includes(task.id);
+  const accepted = acceptedTaskIds.includes(task.id) || collaboration.assignments.some((assignment) => assignment.taskId === task.id && assignment.status === "accepted");
   const dateChoices = useMemo(() => dateChoicesFor(now), [now]);
   const timeSlots = useMemo(() => (dateChoice === "Today" ? slotsRemainingToday(now) : startTimeSlots), [dateChoice, now]);
   const start = startMoment(now, dateChoice, startTime);
@@ -1505,23 +1528,32 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
   const applyLocally = (patch: Partial<Task>) =>
     setOwnedTasks((current) => current.map((listing) => (listing.id === task.id ? { ...listing, ...patch } : listing)));
 
+  const managementError = (message: string) => {
+    const normalized = message.toLowerCase();
+    if (normalized.includes("task_has_active_assignment")) return "Someone has accepted this task. Keep any changes in the task thread.";
+    if (normalized.includes("task_start")) return "Choose an available half-hour start between 7 AM and 7 PM.";
+    if (normalized.includes("task_earning_invalid")) return "Enter a helper amount from $15 to $500.";
+    if (normalized.includes("private_address_invalid")) return "Add a valid private match address.";
+    if (normalized.includes("task_listing_management_not_allowed")) return "Only the requester who posted this task can manage it.";
+    if (normalized.includes("live_authenticated_session_required")) return "Refresh your signed-in session before managing this listing.";
+    if (normalized.includes("task_not_found")) return "This listing no longer exists.";
+    return message || "Micro could not update this listing.";
+  };
+
   const save = async () => {
     keyboard.hide();
     setBusy(true);
     setError("");
     const patch: Partial<Task> = { time: timeLabel, startsAt: start, earning: task.mode === "community" ? undefined : Number(amount), privateAddress: address };
-    if (isRemote && supabase) {
-      const { error: updateError } = await supabase
-        .from("tasks")
-        .update({ time_label: timeLabel, earning: task.mode === "community" ? null : Number(amount) })
-        .eq("id", task.id);
-      if (updateError) { setBusy(false); setError(updateError.message); return; }
-      // The address lives in its own owner-only table, so it is written apart
-      // from the listing row and only when it actually changed.
-      if (address !== savedAddress) {
-        const stored = await supabase.from("task_private_details").update({ private_address: address.trim() }).eq("task_id", task.id);
-        if (stored.error) { setBusy(false); setError(stored.error.message); return; }
-      }
+    if (isRemote) {
+      if (!supabase) { setBusy(false); setError("Micro is not connected to the listing service."); return; }
+      const { error: updateError } = await supabase.rpc("update_task_listing", {
+        p_task_id: task.id,
+        p_starts_at: start ? start.toISOString() : null,
+        p_earning: task.mode === "community" ? null : Number(amount),
+        p_private_address: address.trim(),
+      });
+      if (updateError) { setBusy(false); setError(managementError(updateError.message)); return; }
       await refreshRemoteTasks();
     }
     applyLocally(patch);
@@ -1533,12 +1565,10 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
   const remove = async () => {
     setBusy(true);
     setError("");
-    if (isRemote && supabase) {
-      // The private address goes first: a listing row that outlived its address
-      // would leave a matched helper with nowhere to go.
-      await supabase.from("task_private_details").delete().eq("task_id", task.id);
-      const { error: deleteError } = await supabase.from("tasks").delete().eq("id", task.id);
-      if (deleteError) { setBusy(false); setError(deleteError.message); return; }
+    if (isRemote) {
+      if (!supabase) { setBusy(false); setError("Micro is not connected to the listing service."); return; }
+      const { error: deleteError } = await supabase.rpc("delete_task_listing", { p_task_id: task.id });
+      if (deleteError) { setBusy(false); setError(managementError(deleteError.message)); return; }
       await refreshRemoteTasks();
     }
     setOwnedTasks((current) => current.filter((listing) => listing.id !== task.id));
@@ -1546,6 +1576,22 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
     setSelectedTaskId("");
     setActiveTab("nearby");
     onDone();
+  };
+
+  const togglePaused = async () => {
+    keyboard.hide();
+    setBusy(true);
+    setError("");
+    if (isRemote) {
+      if (!supabase) { setBusy(false); setError("Micro is not connected to the listing service."); return; }
+      const { error: pauseError } = await supabase.rpc("set_task_listing_paused", { p_task_id: task.id, p_paused: !paused });
+      if (pauseError) { setBusy(false); setError(managementError(pauseError.message)); return; }
+      await refreshRemoteTasks();
+    }
+    const nextPaused = !paused;
+    applyLocally({ listingPaused: nextPaused });
+    setPaused(nextPaused);
+    setBusy(false);
   };
 
   return (
@@ -1568,12 +1614,12 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
             <p className="fine-print">Scope, title, and duration come from the reviewed catalog entry. To change those, post the task you actually need instead.</p>
             {error ? <p className="form-error" role="alert">{error}</p> : null}
             {saved ? <div className="status-receipt" role="status"><CheckCircle size={18} weight="fill" /> Listing updated{isRemote ? " for every neighbor" : " in this local session"}.</div> : null}
-            <button className="primary-button" disabled={!changed || busy || !addressLoaded || !address.trim()} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
+            <button className="primary-button" disabled={accepted || !changed || busy || !addressLoaded || !address.trim()} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
           </section>
 
           <section className="form-section manage-section">
             <button className="secondary-button" onClick={() => { setSelectedTaskId(task.id); setActiveTab("nearby"); onDone(); }}>See it in Nearby <ArrowRight size={18} /></button>
-            <button className="secondary-button" onClick={() => applyLocally({ listingPaused: !paused })}>{paused ? "Resume listing" : "Pause listing"}</button>
+            <button className="secondary-button" disabled={accepted || busy} onClick={() => { void togglePaused(); }}>{paused ? "Resume listing" : "Pause listing"}</button>
             <p className="fine-print">{paused ? "Paused listings stay yours but never appear in Nearby." : "Pausing hides it from Nearby without deleting it."}</p>
           </section>
 
@@ -1581,7 +1627,7 @@ function ManageListingScreen({ task, onDone }: { task: Task; onDone: () => void 
             <section className="cancellation-card">
               <strong>Delete this listing?</strong>
               <p>{isRemote ? "It is removed for every neighbor, along with the private address stored with it. This cannot be undone." : "It is removed from this local session. This cannot be undone."}</p>
-              <button className="danger-button" disabled={busy} onClick={remove}>{busy ? "Deleting…" : "Delete permanently"}</button>
+              <button className="danger-button" disabled={accepted || busy} onClick={remove}>{busy ? "Deleting…" : "Delete permanently"}</button>
               <button className="text-button" onClick={() => setConfirmingDelete(false)}>Keep the listing</button>
             </section>
           ) : (
@@ -1899,7 +1945,7 @@ function PostScreen() {
     keyboard.hide();
     setPostDraft((current) => {
       const nextSelections = { ...current.selections, [optionId]: choiceId };
-      return { ...current, selections: nextSelections, amount: String(composeListing(template, nextSelections).suggestedPay) };
+      return { ...current, selections: nextSelections, amount: String(composeListing(template, nextSelections).suggestedPay), durationMinutes: undefined };
     });
   };
   const setDateChoice = (value: string) => { keyboard.hide(); setField("dateChoice", value); };
@@ -2093,10 +2139,10 @@ function PostScreen() {
         <div className="standard-page nav-padded">
           <section className="success-view post-success" role="status" aria-live="polite">
             <span className="success-seal"><CheckCircle size={46} weight="fill" /></span>
-            <p className="eyebrow">Ready for neighbors</p>
-            <h1>Your task is posted.</h1>
-            <p>It is visible around {profileArea} with an approximate public location.</p>
-            <div className="truth-card"><Info size={22} /><div><strong>{auth.demoMode || !auth.session ? "Local demo only" : "Saved for your neighbors"}</strong><span>{auth.demoMode || !auth.session ? "This listing lives in this browser session and no other neighbor can see it. Sign in to post for real." : "Neighbors signed in to Micro can see this listing. Your exact address stays private until a match. No payment or notification was created."}</span></div></div>
+            <p className="eyebrow">{template.isCustom ? "Submitted for review" : "Ready for neighbors"}</p>
+            <h1>{template.isCustom ? "Your custom task is saved." : "Your task is posted."}</h1>
+            <p>{template.isCustom ? `It stays visible to you around ${profileArea} while its wording is reviewed.` : `It is visible around ${profileArea} with an approximate public location.`}</p>
+            <div className="truth-card"><Info size={22} /><div><strong>{auth.demoMode || !auth.session ? "Local demo only" : template.isCustom ? "Awaiting review" : "Saved for your neighbors"}</strong><span>{auth.demoMode || !auth.session ? "This listing lives in this browser session and no other neighbor can see it. Sign in to post for real." : template.isCustom ? "Other neighbors cannot see or accept this custom task until it is approved. Your exact address remains private." : "Neighbors signed in to Micro can see this listing. Your exact address stays private until a match. No payment or notification was created."}</span></div></div>
             <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} pending={template.isCustom} />
             <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { publishNonceRef.current = crypto.randomUUID(); setPostDraft(initialPostDraft); setPublished(false); setStep(0); setOpenCategoryId(null); setCatalogQuery(""); }}>Post another task</button></div>
           </section>
@@ -2139,7 +2185,7 @@ function PostScreen() {
                   <span className="category-tile-icon"><NotePencil size={22} weight="duotone" /></span>
                   <div><strong>Describe the task</strong><small>For work the catalog does not carry yet.</small></div>
                 </div>
-                <div className="boundary-note custom-warning"><Warning size={20} weight="fill" /><span>Catalog tasks are checked for scope and safety before neighbors see them. A task you write yourself is not, so keep it plain and inside the safety boundary of the category you pick — it goes live to neighbors straight away.</span></div>
+                <div className="boundary-note custom-warning"><Warning size={20} weight="fill" /><span>Catalog tasks are checked for scope and safety before neighbors see them. A task you write yourself is not, so it stays marked as awaiting review and must remain inside the safety boundary of the category you pick.</span></div>
                 <label className="field-label-block">Task title<KeyboardInput value={customTitle} maxLength={60} onChange={(event) => setField("customTitle", event.target.value)} onBlur={() => keyboard.hide()} placeholder="Short and plain" /></label>
                 <label className="field-label-block">What should the helper do?<KeyboardTextarea rows={4} value={customDetails} maxLength={300} onChange={(event) => setField("customDetails", event.target.value)} onBlur={() => keyboard.hide()} placeholder="What the work is, what is provided, and where it happens." /></label>
                 <fieldset className="choice-fieldset"><legend>Closest category</legend><div className="category-grid">{catalogCategories.map((entry) => {
@@ -2317,7 +2363,7 @@ function PostScreen() {
             <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
             <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea}</strong><small>{modeMeta[mode].label} · {template.category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{template.youthEligible ? "Adults and Youth Mode helpers" : "Adults only"}</strong><small>Set by the task you picked, not by the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
             {template.isCustom
-              ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so neighbors read your wording as written. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
+              ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so it remains visible only to you while awaiting review. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
               : <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>}
             <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid || publishing} onClick={publish}>{publishing ? "Publishing…" : "Publish task"}</button></div>
             {publishError ? <p className="form-error" role="alert">{publishError}</p> : null}
@@ -2334,6 +2380,7 @@ function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 1
   return (
     <article className="task-card preview-card" data-mode={mode} data-selected="true">
       <div className="task-card-top"><span className="task-icon"><TaskIcon size={23} weight="bold" /></span><div className="task-title-block"><div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[mode].label}</div><h2>{title}</h2></div>{mode !== "community" ? <div className="earning"><strong>${amount || "0"}</strong><span>You earn</span></div> : null}</div>
+      {pending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       <p className="task-description">{details}</p>
       <div className="task-facts"><span><MapPin size={17} /> {area}</span><span><CalendarBlank size={17} /> {time}</span><span><Clock size={17} /> {duration}</span></div>
     </article>
@@ -2553,13 +2600,17 @@ function collaborationNotices(collaboration: CollaborationState, signedInUserId:
   }
 
   for (const thread of Object.values(collaboration.messagesByAssignment)) {
-    // Your own lines are not news, and a thread you have not been replied to in
-    // has nothing to announce.
-    const latest = [...thread].reverse().find((message) => message.senderId !== signedInUserId);
+    const assignmentId = thread[0]?.assignmentId;
+    if (!assignmentId) continue;
+    const latest = unreadMessagesAfterCursor(
+      thread,
+      collaboration.readCursorsByAssignment[assignmentId],
+      signedInUserId,
+    ).at(-1);
     if (!latest) continue;
     notices.push({
-      icon: ChatCircle,
-      title: `New message from ${latest.senderName}`,
+      icon: latest.kind === "system" ? ListChecks : ChatCircle,
+      title: latest.kind === "system" ? "Task update" : `New message from ${latest.senderName}`,
       copy: latest.body,
       time: agoLabel(now, new Date(latest.createdAt)),
       tab: "messages",
@@ -2676,12 +2727,12 @@ function LiveAssignmentSyncState({ task }: { task: Task }) {
  */
 function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: TaskAssignment }) {
   const flow = useFlow();
-  const auth = useAuth();
   const keyboard = useKeyboard();
+  const auth = useAuth();
   const { collaboration, setActiveTab, setAcceptedTaskIds, setClosedTaskIds, setCommunityStage, setPaidStage, setTaskEvents } = useMicro();
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [issuedCode, setIssuedCode] = useState("");
-  const [codeEntry, setCodeEntry] = useState("");
+  const [helperCompletionCode, setHelperCompletionCode] = useState("");
+  const [requesterCompletionCode, setRequesterCompletionCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const userId = auth.session?.user.id ?? null;
@@ -2689,56 +2740,45 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
   const isHelper = assignment.helperId === userId;
   const active = assignment.status === "accepted";
   const completionRequested = Boolean(assignment.completionRequestedAt);
-
-  // The code is server state, not something this screen remembers. Reopening
-  // the job asks for it again, which is also what makes it survive a reload.
-  const readCode = collaboration.fetchCompletionCode;
-  useEffect(() => {
-    if (!isHelper || !completionRequested) return;
-    let current = true;
-    void readCode(assignment.id).then((code) => { if (current && code) setIssuedCode(code); });
-    return () => { current = false; };
-  }, [assignment.id, completionRequested, isHelper, readCode]);
   const statusLabel = assignment.status === "completed" ? "Completed" : assignment.status === "canceled" ? "Canceled" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched";
   const roleLabel = isRequester ? "Requester" : isHelper ? (task.mode === "community" ? "Volunteer" : "Helper") : "Participant";
 
-  // The helper says the work is done and is handed the code to read out. It is
-  // the same code every time it is asked for, so a reload never leaves the
-  // requester holding a number that no longer opens the task.
-  const finishJob = async () => {
+  const recordCompletion = () => {
+    setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
+    setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
+    if (task.mode === "community") setCommunityStage("Completed");
+    else setPaidStage("Completed");
+    appendTaskEvent(setTaskEvents, task.id, "Requester confirmed the helper's completion code. The listing was paused and the participant thread retained read-only.");
+  };
+
+  const requestCompletion = async () => {
     if (!active || busy || !isHelper) return;
     setBusy(true);
     setError("");
     const result = await collaboration.requestCompletion(assignment.id);
     setBusy(false);
     if (!result.ok) {
-      setError(result.message ?? "Micro could not request completion.");
+      setError(result.message ?? "Micro could not create the completion code.");
       return;
     }
-    if (result.code) setIssuedCode(result.code);
-    appendTaskEvent(setTaskEvents, task.id, "Helper reported the job finished and was issued a completion code for the requester to enter.");
+    if (result.code) {
+      setHelperCompletionCode(result.code);
+      appendTaskEvent(setTaskEvents, task.id, "Helper marked the work finished and received the private completion code.");
+    }
   };
 
-  // The requester types what the helper read out. A wrong code is rejected by
-  // the database, which never sends the right one back — so the only way to
-  // learn it is from the person who did the work.
-  const confirmCode = async () => {
-    if (!active || busy || !isRequester) return;
+  const confirmCompletion = async () => {
+    if (!active || busy || !isRequester || requesterCompletionCode.length !== 4) return;
+    keyboard.hide();
     setBusy(true);
     setError("");
-    const result = await collaboration.confirmCompletion(assignment.id, codeEntry);
+    const result = await collaboration.confirmCompletion(assignment.id, requesterCompletionCode);
     setBusy(false);
     if (!result.ok) {
-      setError(result.message ?? "Micro could not complete this task.");
+      setError(result.message ?? "Micro could not confirm the completion code.");
       return;
     }
-    setCodeEntry("");
-    keyboard.hide();
-    setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
-    setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
-    if (task.mode === "community") setCommunityStage("Completed");
-    else setPaidStage("Completed");
-    appendTaskEvent(setTaskEvents, task.id, "Requester entered the helper's completion code. The job is finished, the listing was paused, and the participant thread is retained.");
+    recordCompletion();
   };
 
   // Calling the task off. The requester cancels it outright; the helper's
@@ -2760,7 +2800,7 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
     setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
     setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
     if (task.mode === "community") setCommunityStage("Canceled");
-    else setPaidStage(isRequester ? "Completed" : "Reopened");
+    else setPaidStage(isRequester ? "Canceled" : "Reopened");
     appendTaskEvent(setTaskEvents, task.id, isRequester
       ? "Requester canceled the activity. The listing was paused and the participant thread retained read-only."
       : "Helper canceled the activity and withdrew. The listing is available for a new eligible helper.");
@@ -2770,34 +2810,10 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
   return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad">
     <div className="activity-hero"><div className={`status-badge ${task.mode === "community" ? "community-status" : ""}`}>{task.mode === "community" ? <HandHeart size={14} weight="fill" /> : <ShieldCheck size={14} weight="fill" />} {statusLabel}</div><h1>{task.title}</h1><p>{roleLabel} · {task.time} · {task.area}</p></div>
     <section className="commitment-brief"><div><span>Agreed scope</span><strong>{task.included}</strong></div><div><span>Not included</span><strong>{task.excluded}</strong></div><div><span>Protected meeting place</span><strong>{task.privateAddress || "Open the matched task details before traveling"}</strong></div></section>
-    {active ? null : <section className="workflow-card"><p className="eyebrow">Retained task record</p><h2>{assignment.status === "completed" ? "The requester closed this match." : "The helper ended this commitment."}</h2><p>The participant thread remains readable for both accounts, but new messages and task actions are closed.</p></section>}
+    {active ? null : <section className="workflow-card"><p className="eyebrow">Retained task record</p><h2>{assignment.status === "completed" ? "The requester confirmed completion." : assignment.status === "canceled" ? "The requester canceled this task." : "The helper ended this commitment."}</h2><p>The participant thread remains readable for both accounts, but new messages and task actions are closed.</p></section>}
     <button className="secondary-button workflow-message" onClick={() => { setActiveTab("messages"); flow.pop(); }}>Open protected messages</button>
-    {/* The helper's side of the handshake: report the work done, then read the
-        code out. Nothing here can close the task on its own. */}
-    {active && isHelper ? (completionRequested ? (
-      <section className="completion-code-card" role="status">
-        <p className="eyebrow">Read this out to {assignment.requesterName}</p>
-        {issuedCode
-          ? <p className="completion-code" aria-label={`Completion code ${issuedCode.split("").join(" ")}`}>{issuedCode}</p>
-          : <p className="completion-code-missing">Reopen this job from your device to see the code again.</p>}
-        <p>The job is finished only once they type it in. Never send it in the thread — say it in person, so the code proves you were there.</p>
-      </section>
-    ) : (
-      <button className="primary-button complete-match-button" disabled={busy} onClick={() => { void finishJob(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Getting your code…" : "I've finished this job"}</button>
-    )) : null}
-
-    {/* The requester's side: the code is the only way through. */}
-    {active && isRequester ? (completionRequested ? (
-      <section className="completion-entry-card">
-        <p className="eyebrow">{assignment.helperName} finished this job</p>
-        <h2>Enter their four-digit code.</h2>
-        <p>Ask for it in person. Entering it releases payment and closes the job.</p>
-        <KeyboardInput className="completion-code-input" value={codeEntry} onChange={(event) => setCodeEntry(event.target.value.replace(/\D/g, "").slice(0, 4))} onBlur={() => keyboard.hide()} inputMode="numeric" autoComplete="one-time-code" placeholder="0000" aria-label="Four-digit completion code" />
-        <button className="primary-button complete-match-button" disabled={busy || codeEntry.length !== 4} onClick={() => { void confirmCode(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Checking…" : "Complete and release payment"}</button>
-      </section>
-    ) : (
-      <section className="workflow-card"><p className="eyebrow">Waiting on the helper</p><h2>{assignment.helperName} has not marked this finished yet.</h2><p>When they do, a four-digit code appears on their device. You will enter it here to close the job and release payment.</p></section>
-    )) : null}
+    {active && isHelper ? <section className="workflow-card"><p className="eyebrow">Finish together</p><h2>{helperCompletionCode ? "Read this code to the requester." : completionRequested ? "Your completion code is ready." : "Finished the agreed work?"}</h2><p>{helperCompletionCode ? "The requester enters it on their device. Keep this screen private until you are together." : "Micro will create a private four-digit code and tell the requester that you are ready."}</p>{helperCompletionCode ? <div className="pin-row" role="status" aria-live="polite"><strong aria-label={`Completion code ${helperCompletionCode.split("").join(" ")}`}>{helperCompletionCode}</strong></div> : null}<button className="primary-button complete-match-button" disabled={busy} onClick={() => { void requestCompletion(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Preparing code…" : completionRequested ? "Show completion code" : "Work finished · get code"}</button></section> : null}
+    {active && isRequester ? <section className="workflow-card"><p className="eyebrow">Completion handshake</p><h2>{completionRequested ? "Enter the helper's four-digit code." : "Waiting for the helper to finish."}</h2><p>{completionRequested ? "Ask the helper to read the code from their device. A matching code closes the task and keeps this thread as a read-only record." : "The helper starts completion from their task screen. Micro will notify you here and in Messages when a code is ready."}</p>{completionRequested ? <><div className="pin-row"><KeyboardInput aria-label="Four digit completion code" inputMode="numeric" maxLength={4} value={requesterCompletionCode} onChange={(event) => { setRequesterCompletionCode(event.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }} onBlur={() => keyboard.hide()} placeholder="••••" /></div><button className="primary-button complete-match-button" disabled={busy || requesterCompletionCode.length !== 4} onClick={() => { void confirmCompletion(); }}><CheckCircle size={22} weight="fill" /> {busy ? "Checking code…" : "Confirm completion"}</button></> : null}</section> : null}
     {active && (isRequester || isHelper) ? <>
       <button className="quiet-action route-quiet-action" onClick={() => setCancelOpen((current) => !current)}>{cancelOpen ? <X size={18} /> : <Warning size={18} />} {cancelOpen ? "Keep this activity" : "Cancel activity"}</button>
       {cancelOpen ? <section className="cancellation-card"><strong>Are you sure you want to finish and cancel this task?</strong><p>{isRequester ? "The task is called off, the listing is paused rather than reopened, and both participants keep this thread as a read-only record." : "You leave this commitment and the listing reopens for another eligible helper. Both participants keep this thread as a read-only record."}</p><div className="cancellation-answers"><button className="danger-button" disabled={busy} onClick={() => { void cancelActivity(); }}>{busy ? "Canceling…" : "Yes, cancel this task"}</button><button className="secondary-button" disabled={busy} onClick={() => setCancelOpen(false)}>No, keep it</button></div><p className="fine-print">Everyone in the thread is told the activity was canceled.</p></section> : null}
@@ -3216,7 +3232,7 @@ function archivedTaskForAssignment(assignment: TaskAssignment): Task {
     coords: fallbackArea.center,
     areaId: fallbackArea.id,
     area: "Archived task record",
-    time: assignment.status === "completed" ? "Completed" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched",
+    time: assignment.status === "completed" ? "Completed" : assignment.status === "canceled" ? "Canceled" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched",
     duration: "Retained record",
     icon: ListChecks,
     included: "Original scope unavailable after task deletion",
@@ -3247,6 +3263,7 @@ function resolveThread(
         mine: message.senderId === signedInUserId,
         text: message.body,
         createdAt: message.createdAt,
+        kind: message.kind,
       })),
       server: true,
     };
@@ -3348,24 +3365,28 @@ function MessagesScreen() {
                 : reviewOnly
                   ? "Guardian review only · no assignment or messages yet."
                   : last
-                    ? `${last.mine ? "You" : other.split(" ")[0]}: ${last.text}`
+                    ? `${last.kind === "system" ? "Micro" : last.mine ? "You" : other.split(" ")[0]}: ${last.text}`
                     : assignment?.status === "completed"
                       ? "Match completed · retained participant record"
+                      : assignment?.status === "canceled"
+                        ? "Task canceled · retained participant record"
                       : assignment?.status === "withdrawn"
                         ? "Commitment ended · retained participant record"
                         : "Match confirmed · send the first task message";
-            const readAt = threadReadAt[key] ?? 0;
-            const unreadCount = participationReady && !settled && !blocked && !reviewOnly
-              ? messages.filter((m) => !m.mine && (m.createdAt ? Date.parse(m.createdAt) : Date.now()) > readAt).length
-              : 0;
+            const serverMessages = assignment ? collaboration.messagesByAssignment[assignment.id] ?? [] : [];
+            const unreadCount = assignment
+              ? unreadMessagesAfterCursor(serverMessages, collaboration.readCursorsByAssignment[assignment.id], signedInUserId).length
+              : participationReady && !settled && !blocked && !reviewOnly
+                ? messages.filter((m) => !m.mine && (m.createdAt ? Date.parse(m.createdAt) : Date.now()) > (threadReadAt[key] ?? 0)).length
+                : 0;
             const unread = unreadCount > 0;
-            const serverStatus = assignment?.status === "completed" ? "Completed" : assignment?.status === "withdrawn" ? "Ended" : "Live";
+            const serverStatus = assignment?.status === "completed" ? "Completed" : assignment?.status === "canceled" ? "Canceled" : assignment?.status === "withdrawn" ? "Ended" : "Live";
             const metadata = server
               ? settled ? `${serverStatus} · read-only · Retained` : `Live · ${task.time}`
               : `${auth.session ? "Preview · local only" : modeMeta[task.mode].label} · ${blocked ? "Blocked" : reported ? "In review" : reviewOnly ? "Not assigned" : task.time}`;
-            return <button key={key} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => { markThreadRead(key); flow.push(makeMessageScreen(task, other, assignment)); }}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unreadCount ? <span className="thread-unread-count" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`}>{unreadCount > 9 ? "9+" : unreadCount}</span> : null}</button>;
+            return <button key={key} className={`thread-row ${unread ? "unread" : ""}`} onClick={() => { if (!assignment) markThreadRead(key); flow.push(makeMessageScreen(task, other, assignment)); }}><span className={`avatar ${task.mode === "community" ? "community-avatar" : ""}`}>{task.mode === "community" ? <HandHeart size={20} weight="fill" /> : detail.initials}</span><span className="thread-copy"><span><strong>{task.title}</strong><time>{reviewOnly ? "Review" : last?.createdAt ? formatMessageTime(last.createdAt) : assignment?.settledAt ? formatMessageDate(assignment.settledAt) : server ? "New" : index === 0 ? "2m" : "Tue"}</time></span><b>{preview}</b><small>{metadata}</small></span>{unreadCount ? <span className="thread-unread-count" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`}>{unreadCount > 9 ? "9+" : unreadCount}</span> : null}</button>;
           })}
-          {!threadDescriptors.length ? <div className="empty-state message-empty"><ShieldCheck size={34} weight="duotone" /><h2>{participationReady ? "No task threads yet." : "Participation is paused."}</h2><p>{participationReady ? "Accept an eligible task or request a guardian review to start a protected thread." : "Update the age, terms, or guardian link in Profile before messaging."}</p></div> : null}
+          {!threadDescriptors.length ? <div className="empty-state message-empty" role={collaboration.loading ? "status" : undefined}><ShieldCheck size={34} weight="duotone" /><h2>{collaboration.loading ? "Loading protected threads…" : participationReady ? "No task threads yet." : "Participation is paused."}</h2><p>{collaboration.loading ? "Micro is checking the assignments this account may read." : participationReady ? "Accept an eligible task or request a guardian review to start a protected thread." : "Update the age, terms, or guardian link in Profile before messaging."}</p></div> : null}
         </section>
       </div>
     </MobileScroll>
@@ -3384,8 +3405,14 @@ function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssig
   const { threadMessages, setThreadMessages, blockedThreadIds, setBlockedThreadIds, blockedRequesterNames, setBlockedRequesterNames, reportedTaskIds, setReportedTaskIds, reportReasons, setReportReasons, moderationHolds, setModerationHolds, taskEvents, setTaskEvents, acceptedTaskIds, acceptedTaskActors, persona, accessTermsAccepted, guardianLinked, youthAge, youthApprovalTaskId, youthApprovedTaskId, guardianSupervisedTaskId, guardianSupervisionStatus, setGuardianSupervisionStatus, collaboration } = useMicro();
   const detail = getTaskDetails(task);
   const signedInUserId = auth.session?.user.id ?? null;
-  const person = counterpartName(assignment, signedInUserId) ?? detail.requester;
-  const { items: messages, server: serverThread } = resolveThread(task, assignment, threadMessages, collaboration, signedInUserId);
+  // FlowStack stores the screen object it was given. Re-resolve its immutable
+  // assignment ID on every collaboration refresh so completion/withdrawal on
+  // the other device locks this composer immediately.
+  const currentAssignment = assignment ? collaboration.assignments.find((candidate) => candidate.id === assignment.id) ?? null : null;
+  const threadAssignment = assignment ? currentAssignment ?? assignment : null;
+  const assignmentSyncMissing = Boolean(assignment && !currentAssignment);
+  const person = counterpartName(threadAssignment, signedInUserId) ?? detail.requester;
+  const { items: messages, server: serverThread } = resolveThread(task, threadAssignment, threadMessages, collaboration, signedInUserId);
   const blocked = !serverThread && (blockedThreadIds.includes(task.id) || blockedRequesterNames.includes(person));
   const reported = !serverThread && (reportedTaskIds.includes(task.id) || Boolean(moderationHolds[task.id]));
   const [safetyOpen, setSafetyOpen] = useState(false);
@@ -3397,21 +3424,25 @@ function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssig
   const [sending, setSending] = useState(false);
   const [sentStatus, setSentStatus] = useState("");
   const [sendError, setSendError] = useState("");
-  const isHistory = task.id.endsWith("-history") || Boolean(assignment && assignment.status !== "accepted");
+  const pendingSendRef = useRef<{ body: string; nonce: string } | null>(null);
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const isHistory = task.id.endsWith("-history") || Boolean(threadAssignment && threadAssignment.status !== "accepted");
   const participationReady = accessTermsAccepted && (persona !== "youth" || (youthAge >= 15 && guardianLinked));
   const actor = persona === "adult" ? "adult" : persona === "youth" ? "youth" : null;
-  const assigned = Boolean(assignment) || Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
+  const assigned = Boolean(threadAssignment) || Boolean(actor && acceptedTaskActors[task.id] === actor && acceptedTaskIds.includes(task.id));
   const readOnlyReview = !assignment && !isHistory && !assigned && (persona === "guardian" || persona === "youth");
   const recordOnly = isHistory || !participationReady;
-  const composerLocked = blocked || readOnlyReview || recordOnly || (Boolean(task.ownerId) && !serverThread);
+  const composerLocked = blocked || readOnlyReview || recordOnly || assignmentSyncMissing || (Boolean(task.ownerId) && !serverThread);
   const displayMessages = readOnlyReview ? [] : messages;
   const reviewCopy = task.mode === "community" ? "Community completion stays paused while the task is reviewed." : "Starting and payout review stay paused while the task is reviewed.";
-  const recordedEvents: TaskEvent[] = serverThread && assignment
-    ? [{ id: 1, text: assignment.status === "accepted"
-      ? `Live match confirmed ${formatMessageDate(assignment.createdAt)}. Only the requester and helper can read this thread.`
-      : assignment.status === "completed"
-        ? `Match completed ${formatMessageDate(assignment.settledAt ?? assignment.createdAt)}. This assignment-specific thread is retained read-only for its two participants.`
-        : `Commitment ended ${formatMessageDate(assignment.settledAt ?? assignment.createdAt)}. This assignment-specific thread is retained read-only for its two participants.` }]
+  const recordedEvents: TaskEvent[] = serverThread && threadAssignment
+    ? [{ id: 1, text: threadAssignment.status === "accepted"
+      ? `Live match confirmed ${formatMessageDate(threadAssignment.createdAt)}. Only the requester and helper can read this thread.`
+      : threadAssignment.status === "completed"
+        ? `Match completed ${formatMessageDate(threadAssignment.settledAt ?? threadAssignment.createdAt)}. This assignment-specific thread is retained read-only for its two participants.`
+        : threadAssignment.status === "canceled"
+          ? `Task canceled ${formatMessageDate(threadAssignment.settledAt ?? threadAssignment.createdAt)}. This assignment-specific thread is retained read-only for its two participants.`
+        : `Commitment ended ${formatMessageDate(threadAssignment.settledAt ?? threadAssignment.createdAt)}. This assignment-specific thread is retained read-only for its two participants.` }]
     : isHistory
     ? [{ id: 1, text: task.mode === "community" ? "Volunteer commitment completed — no payment state was created." : "Task completed — test payment record retained." }]
     : taskEvents[task.id]?.length
@@ -3426,20 +3457,39 @@ function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssig
           ? [{ id: 1, text: "Guardian approved this exact scope and time. The youth participant still needs to accept the task." }]
           : [{ id: 1, text: "No assignment event has been recorded for this local task." }];
 
+  const latestServerMessage = currentAssignment
+    ? collaboration.messagesByAssignment[currentAssignment.id]?.at(-1)
+    : undefined;
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ block: "end" });
+    if (!currentAssignment || !latestServerMessage) return;
+    const cursor = collaboration.readCursorsByAssignment[currentAssignment.id];
+    if (cursor?.lastReadMessageId === latestServerMessage.id) return;
+    // This route is mounted only while visible. Advance to the exact message
+    // rendered here, never to a browser-clock timestamp or an unseen row.
+    void collaboration.markThreadRead(currentAssignment.id, latestServerMessage.id);
+  }, [collaboration, currentAssignment, latestServerMessage]);
+
   const send = async () => {
     if (!draft.trim() || composerLocked || sending) return;
     // A thread with a real counterpart goes to Supabase, and the realtime
     // reload is what puts it on screen — writing it locally too would show the
     // line twice and, worse, show it even when the insert was refused.
-    if (serverThread && assignment?.status === "accepted") {
+    if (serverThread && currentAssignment?.status === "accepted") {
+      const body = draft.trim();
+      const pending = pendingSendRef.current?.body === body
+        ? pendingSendRef.current
+        : { body, nonce: crypto.randomUUID() };
+      pendingSendRef.current = pending;
       setSending(true);
       setSendError("");
-      const result = await collaboration.sendMessage(assignment.id, draft.trim());
+      const result = await collaboration.sendMessage(currentAssignment.id, body, pending.nonce);
       setSending(false);
       if (!result.ok) {
         setSendError(result.message ?? "We couldn't send that message.");
         return;
       }
+      pendingSendRef.current = null;
       setDraft("");
       setSentStatus("Message stored and shared with the matched participant.");
       keyboard.hide();
@@ -3480,16 +3530,20 @@ function MessageThread({ task, assignment }: { task: Task; assignment: TaskAssig
           {reported ? <div className="status-receipt"><Warning size={18} weight="fill" /> {reviewCopy}</div> : null}
           {blocked ? <div className="blocked-message-notice"><ShieldCheck size={18} weight="fill" /><span><strong>Messaging blocked</strong> This thread remains visible for records and support.</span></div> : null}
           {readOnlyReview ? <div className="blocked-message-notice guardian-readonly"><ShieldCheck size={18} weight="fill" /><span><strong>Review-only thread</strong> A guardian decision or youth approval does not release an address or create an assignment.</span></div> : null}
-          {recordOnly && !blocked && !readOnlyReview ? <div className="blocked-message-notice guardian-readonly"><Info size={18} weight="fill" /><span><strong>{assignment?.status === "withdrawn" ? "Ended commitment record" : isHistory ? "Completed task record" : "Participation paused"}</strong> {isHistory ? "This assignment-specific conversation is retained for its participants and cannot receive new messages." : "Previous messages remain visible, but sending is disabled until participation requirements are restored."}</span></div> : null}
+          {recordOnly && !blocked && !readOnlyReview ? <div className="blocked-message-notice guardian-readonly"><Info size={18} weight="fill" /><span><strong>{threadAssignment?.status === "withdrawn" ? "Ended commitment record" : threadAssignment?.status === "canceled" ? "Canceled task record" : isHistory ? "Completed task record" : "Participation paused"}</strong> {isHistory ? "This assignment-specific conversation is retained for its participants and cannot receive new messages." : "Previous messages remain visible, but sending is disabled until participation requirements are restored."}</span></div> : null}
+          {assignmentSyncMissing ? <div className="blocked-message-notice guardian-readonly" role="status"><Info size={18} weight="fill" /><span><strong>Refreshing this match</strong> Sending stays locked until Micro confirms the current assignment state.</span></div> : null}
           <div className="message-date">{serverThread && messages[0]?.createdAt ? formatMessageDate(messages[0].createdAt) : "Today"}</div>
           {serverThread && !displayMessages.length ? <div className="empty-thread-prompt"><ChatCircle size={25} weight="duotone" /><strong>{isHistory ? "No messages in this retained thread." : "Start with the task."}</strong><span>{isHistory ? "The participant record remains separate from every later rematch." : "Confirm timing, scope, or arrival details without sharing sensitive information."}</span></div> : null}
-          {displayMessages.map((message) => <div key={message.id} className="message-bubble" data-mine={message.mine ? "true" : "false"}>{message.text}<span>{message.createdAt ? formatMessageTime(message.createdAt) : message.mine ? "Sent" : "2:12 PM"}</span></div>)}
+          <div className="message-log" role="log" aria-live="polite" aria-relevant="additions text" aria-label={`Messages with ${person}`}>
+            {displayMessages.map((message) => { const messageTime = message.createdAt ? formatMessageTime(message.createdAt) : message.mine ? "Sent" : "2:12 PM"; const speaker = message.kind === "system" ? "Micro task event" : message.mine ? "You" : person; return <div key={message.id} className="message-bubble" data-mine={message.mine ? "true" : "false"} data-kind={message.kind ?? "human"} aria-label={`${speaker}, ${messageTime}: ${message.text}`}>{message.text}<span aria-hidden="true">{messageTime}</span></div>; })}
+            <div ref={messageEndRef} aria-hidden="true" />
+          </div>
           {sendError ? <p className="form-error" role="alert">{sendError}</p> : null}
           <span className="sr-only" role="status" aria-live="polite">{sentStatus}</span>
         </div>
       </MobileScroll>
       <div className="message-composer" data-blocked={composerLocked ? "true" : "false"} style={{ bottom: bottomInset }}>
-        <KeyboardInput aria-label="Message" value={draft} maxLength={2000} disabled={composerLocked || sending} onChange={(event) => { setDraft(event.target.value); setSendError(""); }} onBlur={() => keyboard.hide()} placeholder={blocked ? "Messaging blocked" : readOnlyReview ? "Available after task acceptance" : isHistory ? "Read-only task record" : !participationReady ? "Participation paused" : serverThread ? `Message ${person} about this task` : "Message about this task"} />
+        <KeyboardInput aria-label="Message" value={draft} maxLength={2000} disabled={composerLocked || sending} onChange={(event) => { setDraft(event.target.value); setSendError(""); }} onBlur={() => keyboard.hide()} placeholder={blocked ? "Messaging blocked" : readOnlyReview ? "Available after task acceptance" : assignmentSyncMissing ? "Refreshing match…" : isHistory ? "Read-only task record" : !participationReady ? "Participation paused" : serverThread ? `Message ${person} about this task` : "Message about this task"} />
         <button className="send-button" aria-label="Send message" disabled={composerLocked || sending || !draft.trim()} onClick={() => void send()}><PaperPlaneTilt size={21} weight="fill" /></button>
       </div>
       <BottomSheet open={safetyOpen} onOpenChange={setSafetyOpen} title={safetyState === "reported" ? "Report recorded" : safetyState === "blocked" ? `${person} blocked` : safetyState === "reasons" ? "Report this task" : "Safety options"} description={safetyState === "reported" ? reviewCopy : safetyState === "blocked" ? "Future direct contact is stopped in this local fixture." : reviewCopy} snap={safetyState === "reasons" ? 0.74 : 0.46}>
@@ -3593,11 +3647,7 @@ function ProfileScreen() {
     <><MobileScroll className="app-screen tab-scroll">
       <div className="standard-page nav-padded profile-page">
         <PageTitle title="Profile" />
-        {/* The photo you chose belongs on your own profile, not only on a map
-            pin, and the card is where anyone would tap to change it. */}
-        {/* The photo you chose belongs on your own profile, not only on a map
-            pin, and the card is where anyone would tap to change it. */}
-        <section className="profile-card"><button className="profile-avatar-button" aria-label={profilePhoto ? "Change your profile photo" : "Add a profile photo"} onClick={() => setPhotoOpen(true)}>{profilePhoto ? <PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Your profile photo" /> : <span className="avatar large">{profile.initials}</span>}<span className="profile-avatar-edit" aria-hidden="true"><Camera size={13} weight="fill" /></span></button><div><h2>{profile.name}</h2><p>{profile.detail}</p>{isLiveAccount ? null : <div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div>}</div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
+        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p>{isLiveAccount ? null : <div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div>}</div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
         <section className="settings-group">
@@ -3617,10 +3667,10 @@ function ProfileScreen() {
         </section>
         {!isLiveAccount ? <SettingsGroup title="Participation fixtures" summary="Youth Mode, guardian approval, and demo roles"><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></SettingsGroup> : null}
         <SettingsGroup title="Account &amp; safety" summary="Saved tasks, payments, blocked people, and support"><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></SettingsGroup>
-        <SettingsGroup title="Preferences" summary="Notifications, approximate area, and your photo"><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Profile photo</strong><small>{profilePhoto ? "Photo selected" : "Default person icon"} · your profile and map marker</small></span><ArrowRight size={18} /></button></SettingsGroup>
+        <SettingsGroup title="Preferences" summary="Notifications, approximate area, and your map marker"><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Saved only in this browser" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></SettingsGroup>
         {isLiveAccount ? <SettingsGroup title="Account controls" summary="Delete your account"><button className="settings-row delete-account-row" onClick={() => flow.push(makeDeleteAccountScreen())}><span className="settings-icon"><Trash size={21} weight="bold" /></span><span><strong>Delete account</strong><small>Permanently remove your sign-in and Micro profile</small></span><ArrowRight size={18} /></button></SettingsGroup> : null}
         <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Connected account" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account, organization access, real task listings, protected matches, private addresses, and participant messages. Payments, moderation, profile photos, and push notifications remain preview-only." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
-      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
+      </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and stored only in this browser. Photos never appear in routine task cards or your profile." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Browser-only marker photo selected" : "Use the default person icon"}</strong><p>This photo powers only your own future map marker. It stays in this browser and is not uploaded, synced, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
 }
 

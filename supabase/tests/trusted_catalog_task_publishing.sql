@@ -163,7 +163,8 @@ begin
     p_custom_description => null,
     p_custom_category_id => null,
     p_custom_minutes => null,
-    p_custom_completion_id => null
+    p_custom_completion_id => null,
+    p_duration_minutes => 75
   );
 
   if not exists (
@@ -183,7 +184,7 @@ begin
       and task.category = 'Yard & garden'
       and task.mode = 'paid'
       and task.earning = 35
-      and task.duration = '60 min'
+      and task.duration = '75 min'
       and task.youth_eligible
       and task.area_id = 'downtown'
       and task.area = 'Downtown & Lake Merritt'
@@ -224,7 +225,8 @@ begin
     p_custom_description => null,
     p_custom_category_id => null,
     p_custom_minutes => null,
-    p_custom_completion_id => null
+    p_custom_completion_id => null,
+    p_duration_minutes => 75
   );
 
   if retry_task_id <> catalog_task_id
@@ -292,7 +294,8 @@ begin
     p_custom_description => 'Sort the shoes and coats into the labeled bins already provided.',
     p_custom_category_id => 'home',
     p_custom_minutes => 45,
-    p_custom_completion_id => 'photo'
+    p_custom_completion_id => 'photo',
+    p_duration_minutes => null
   );
 
   if not exists (
@@ -332,7 +335,8 @@ begin
     p_custom_description => null,
     p_custom_category_id => null,
     p_custom_minutes => null,
-    p_custom_completion_id => null
+    p_custom_completion_id => null,
+    p_duration_minutes => null
   );
 
   if not exists (
@@ -367,7 +371,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: incomplete catalog selection was accepted';
   exception
@@ -390,7 +395,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: disallowed catalog mode was accepted';
   exception
@@ -413,7 +419,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: regular account created sponsored task';
   exception
@@ -436,7 +443,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: volunteer task carried pay';
   exception
@@ -459,13 +467,38 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: out-of-range pay was accepted';
   exception
     when check_violation then
       if sqlerrm <> 'task_earning_invalid' then
         raise exception 'trusted publishing test failed: unstable pay-range error: %', sqlerrm;
+      end if;
+  end;
+
+  begin
+    perform public.publish_task(
+      p_client_nonce => '92000000-0000-4000-8000-000000000018',
+      p_template_id => 'yard-water',
+      p_selections => '{}'::jsonb,
+      p_mode => 'community',
+      p_earning => null,
+      p_starts_at => null,
+      p_private_address => '625 Excess Duration Bypass',
+      p_custom_title => null,
+      p_custom_description => null,
+      p_custom_category_id => null,
+      p_custom_minutes => null,
+      p_custom_completion_id => null,
+      p_duration_minutes => 241
+    );
+    raise exception 'trusted publishing test failed: out-of-range duration was accepted';
+  exception
+    when check_violation then
+      if sqlerrm <> 'task_duration_out_of_range' then
+        raise exception 'trusted publishing test failed: unstable duration-range error: %', sqlerrm;
       end if;
   end;
 
@@ -482,7 +515,8 @@ begin
       p_custom_description => 'Replace the electrical wiring behind the kitchen wall this afternoon.',
       p_custom_category_id => 'home',
       p_custom_minutes => 60,
-      p_custom_completion_id => 'confirm'
+      p_custom_completion_id => 'confirm',
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: prohibited custom work was accepted';
   exception
@@ -505,7 +539,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: past start was accepted';
   exception
@@ -528,7 +563,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: empty private address was accepted';
   exception
@@ -551,7 +587,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: null publish nonce was accepted';
   exception
@@ -608,7 +645,8 @@ begin
     p_custom_description => null,
     p_custom_category_id => null,
     p_custom_minutes => null,
-    p_custom_completion_id => null
+    p_custom_completion_id => null,
+    p_duration_minutes => null
   );
 
   if not exists (
@@ -664,7 +702,8 @@ begin
       p_custom_description => null,
       p_custom_category_id => null,
       p_custom_minutes => null,
-      p_custom_completion_id => null
+      p_custom_completion_id => null,
+      p_duration_minutes => null
     );
     raise exception 'trusted publishing test failed: revoked session published a task';
   exception

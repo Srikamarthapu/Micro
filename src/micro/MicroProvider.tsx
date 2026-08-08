@@ -91,7 +91,7 @@ export type MicroContextValue = {
   setTaskReviews: Dispatch<SetStateAction<Record<string, TaskReviewState>>>;
   notificationsEnabled: boolean;
   setNotificationsEnabled: (enabled: boolean) => void;
-  /** When each thread was last opened, so unread counts survive a re-render. */
+  /** Browser-local read markers retained only for fixture conversations. */
   threadReadAt: Record<string, number>;
   markThreadRead: (key: string) => void;
   /** Special jobs already read in Notifications, so the bell stops pinging for them. */
@@ -134,9 +134,8 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
   // Listings other neighbors published. Empty in demo mode, where there is no
   // account to attribute a post to and nothing to sync with.
-  // Read receipts are per-device by nature, so they live in this browser rather
-  // than the database. Keyed by account, because two accounts share an origin
-  // only when someone signs out and back in.
+  // Fixture read markers stay in this browser. Live assignment threads use the
+  // authoritative server cursors exposed by `collaboration` instead.
   const readStorageKey = auth.session?.user.id ? `micro-thread-reads-${auth.session.user.id}` : "micro-thread-reads-demo";
   const [threadReadAt, setThreadReadAt] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -185,33 +184,6 @@ export function MicroProvider({ children }: { children: ReactNode }) {
     void refreshRemoteTasks();
   }, [refreshRemoteTasks]);
 
-  // A listing published on another device has to arrive here on its own. Without
-  // this, a window only ever sees the listings that existed when it signed in.
-  const accessToken = auth.session?.access_token ?? null;
-  const refreshRef = useRef(refreshRemoteTasks);
-  refreshRef.current = refreshRemoteTasks;
-  useEffect(() => {
-    const client = supabase;
-    if (!client || !signedInUserId || !accessToken) return;
-    client.realtime.setAuth(accessToken);
-    const channel = client
-      .channel(`micro-listings-${signedInUserId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
-        void refreshRef.current();
-      })
-      .subscribe();
-    // Realtime can be disabled per table in the dashboard, so returning to the
-    // tab re-reads as well rather than trusting the socket alone.
-    const onFocus = () => { if (document.visibilityState === "visible") void refreshRef.current(); };
-    document.addEventListener("visibilitychange", onFocus);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      void client.removeChannel(channel);
-      document.removeEventListener("visibilitychange", onFocus);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [signedInUserId, accessToken]);
-
   const collaboration = useCollaboration(signedInUserId, auth.session?.access_token ?? null);
   const refreshCollaboration = collaboration.refresh;
 
@@ -229,16 +201,10 @@ export function MicroProvider({ children }: { children: ReactNode }) {
     const timer = window.setInterval(refresh, 8_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisibility);
-    const channel = client
-      .channel(`micro-live-tasks-${signedInUserId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, refresh)
-      .subscribe();
-
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibility);
-      void client.removeChannel(channel);
     };
   }, [refreshCollaboration, refreshRemoteTasks, signedInUserId]);
 

@@ -63,11 +63,27 @@ prevent sender or system-message spoofing before RLS is evaluated, and the
 per-sender nonce makes a network retry idempotent. Both new exposed tables
 carry the same restrictive live-session policy as the rest of Micro.
 
+Thread read state is server-backed in `task_thread_reads`. A participant may
+select only their own cursor and may advance it only through
+`mark_task_thread_read(p_assignment_id, p_message_id)`. The RPC derives the
+reader from the live session, verifies that the target message belongs to that
+participant's assignment, and never moves a cursor backwards. Clients should
+use the cursor's exact message ID for unread calculations rather than comparing
+database timestamps with a device clock.
+
 The trusted state transitions are:
 
-- `withdraw_task_assignment(p_assignment_id)`, helper-only;
-- `complete_task_assignment(p_assignment_id)`, requester-only, which also
-  pauses the source listing.
+- `withdraw_task_assignment(p_assignment_id)`, helper-only, which reopens the
+  listing;
+- `cancel_task_assignment(p_assignment_id)`, requester-only, which pauses the
+  listing;
+- `request_task_completion(p_assignment_id)`, helper-only, which creates one
+  retry-stable four-digit code and a neutral system thread event;
+- `confirm_task_completion(p_assignment_id, p_code)`, requester-only. Expected
+  wrong-code and lockout outcomes return structured results so their
+  server-side attempt state commits; a valid code closes the assignment,
+  deletes the one-time code, pauses the listing, and appends a final system
+  event. The former unilateral completion RPC is intentionally revoked.
 
 Both transitions append-close but retain the thread. Settled account deletion
 anonymizes requester, helper, and sender foreign keys and preserves the task
@@ -81,13 +97,16 @@ historical assignment after withdrawal. The client must tolerate nullable
 `task_id`, `requester_id`, `helper_id`, and `sender_id` on retained history.
 
 Acceptance is coordination only: it does not claim that payment is secured.
-Authenticated browser grants permit only pausing an unmatched task; title,
-scope, schedule, review provenance, and private address are not directly
-mutable. Browser task inserts cannot set review or paused state and therefore
-fail closed as review-pending until the trusted catalog publisher replaces that
-interim path. Postgres Changes publishes tasks, assignments, and messages for
-prototype responsiveness; RLS remains the authorization boundary, and clients
-should refetch on reconnect or focus.
+`publish_task(...)` is the only trusted publishing path and composes catalog
+content server-side; custom tasks remain review-pending. Listing owners manage
+an unmatched listing through `update_task_listing(...)`,
+`set_task_listing_paused(...)`, and `delete_task_listing(...)`. These RPCs lock
+the task, derive the owner from the live session, validate schedule, earning,
+and private address, and reject changes once an active assignment exists.
+Authenticated clients cannot directly rewrite title, scope, review provenance,
+schedule, or private address. Postgres Changes publishes tasks, assignments,
+messages, and thread-read cursors for responsiveness; RLS remains the
+authorization boundary, and clients refetch on reconnect or focus.
 
 ## Local verification
 
@@ -110,6 +129,12 @@ psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
 
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/tests/task_interactions_rls.sql
+
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/task_thread_reads_rls.sql
+
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/manage_task_listings.sql
 
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/tests/trusted_catalog_task_publishing.sql

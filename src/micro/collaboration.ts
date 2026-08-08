@@ -42,6 +42,13 @@ export type TaskMessage = {
   createdAt: string;
 };
 
+export type TaskThreadReadCursor = {
+  assignmentId: string;
+  readerId: string;
+  lastReadAt: string;
+  lastReadMessageId: string;
+};
+
 export type CollaborationResult = { ok: boolean; message?: string };
 /** A completion request also hands back the code the helper reads out. */
 export type CompletionCodeResult = CollaborationResult & { code?: string };
@@ -76,11 +83,22 @@ function messageFromRow(row: Record<string, unknown>): TaskMessage {
   };
 }
 
+function threadReadCursorFromRow(row: Record<string, unknown>): TaskThreadReadCursor {
+  return {
+    assignmentId: String(row.assignment_id),
+    readerId: String(row.reader_id),
+    lastReadAt: String(row.last_read_at),
+    lastReadMessageId: String(row.last_read_message_id),
+  };
+}
+
 export type CollaborationState = {
   /** Live and settled assignments on tasks you own or accepted. */
   assignments: TaskAssignment[];
   /** Every thread you are party to, keyed by immutable assignment id. */
   messagesByAssignment: Record<string, TaskMessage[]>;
+  /** The caller's authoritative server read cursor for each assignment. */
+  readCursorsByAssignment: Record<string, TaskThreadReadCursor>;
   error: string | null;
   /** True until the first load settles, so the UI can avoid a false "no threads". */
   loading: boolean;
@@ -91,8 +109,8 @@ export type CollaborationState = {
   confirmCompletion: (assignmentId: string, code: string) => Promise<CollaborationResult>;
   /** The helper's own issued code, or null for anyone else. */
   fetchCompletionCode: (assignmentId: string) => Promise<string | null>;
-  completeAssignment: (assignmentId: string) => Promise<CollaborationResult>;
-  sendMessage: (assignmentId: string, body: string) => Promise<CollaborationResult>;
+  markThreadRead: (assignmentId: string, messageId: string) => Promise<CollaborationResult>;
+  sendMessage: (assignmentId: string, body: string, clientNonce: string) => Promise<CollaborationResult>;
   refresh: () => Promise<void>;
 };
 
@@ -101,6 +119,7 @@ export function emptyCollaboration(): CollaborationState {
   return {
     assignments: [],
     messagesByAssignment: {},
+    readCursorsByAssignment: {},
     error: null,
     loading: false,
     acceptTask: unavailable,
@@ -109,7 +128,7 @@ export function emptyCollaboration(): CollaborationState {
     requestCompletion: unavailable,
     confirmCompletion: unavailable,
     fetchCompletionCode: async () => null,
-    completeAssignment: unavailable,
+    markThreadRead: unavailable,
     sendMessage: unavailable,
     refresh: async () => {},
   };
@@ -118,6 +137,7 @@ export function emptyCollaboration(): CollaborationState {
 export function useCollaboration(userId: string | null, accessToken: string | null): CollaborationState {
   const [assignments, setAssignments] = useState<TaskAssignment[]>([]);
   const [messages, setMessages] = useState<TaskMessage[]>([]);
+  const [readCursorsByAssignment, setReadCursorsByAssignment] = useState<Record<string, TaskThreadReadCursor>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(userId));
 
@@ -125,21 +145,32 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     if (!supabase || !userId) {
       setAssignments([]);
       setMessages([]);
+      setReadCursorsByAssignment({});
       setError(null);
       setLoading(false);
       return;
     }
-    const [assignmentResult, messageResult] = await Promise.all([
+    const [assignmentResult, messageResult, readCursorResult] = await Promise.all([
       supabase.from("task_assignment_details").select("*").order("created_at", { ascending: false }).limit(200),
-      supabase.from("task_message_details").select("*").order("created_at", { ascending: true }).limit(500),
+      supabase
+        .from("task_message_details")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(500),
+      supabase
+        .from("task_thread_reads")
+        .select("assignment_id, reader_id, last_read_at, last_read_message_id"),
     ]);
-    const failure = assignmentResult.error ?? messageResult.error;
+    const failure = assignmentResult.error ?? messageResult.error ?? readCursorResult.error;
     if (failure) {
       setError(failure.message);
       setLoading(false);
       return;
     }
     const assignmentRows = (assignmentResult.data ?? []) as Array<Record<string, unknown>>;
+    const messageRows = ((messageResult.data ?? []) as Array<Record<string, unknown>>).slice().reverse();
+    const readCursorRows = (readCursorResult.data ?? []) as Array<Record<string, unknown>>;
     const taskIds = [...new Set(assignmentRows.flatMap((row) => row.task_id ? [String(row.task_id)] : []))];
     const tasksById = new Map<string, Task>();
     let enrichmentError: string | null = null;
@@ -159,7 +190,11 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     }
     setError(enrichmentError);
     setAssignments(assignmentRows.map((row) => assignmentFromRow(row, tasksById.get(String(row.task_id)))));
-    setMessages((messageResult.data ?? []).map((row) => messageFromRow(row as Record<string, unknown>)));
+    setMessages(messageRows.map((row) => messageFromRow(row)));
+    setReadCursorsByAssignment(Object.fromEntries(readCursorRows.map((row) => {
+      const cursor = threadReadCursorFromRow(row);
+      return [cursor.assignmentId, cursor];
+    })));
     setLoading(false);
   }, [userId]);
 
@@ -188,6 +223,9 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
         void refreshRef.current();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "task_messages" }, () => {
+        void refreshRef.current();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "task_thread_reads" }, () => {
         void refreshRef.current();
       })
       .subscribe();
@@ -222,16 +260,6 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     return { ok: true };
   }, [assignments, refresh, userId]);
 
-  const completeAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
-    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
-    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
-    if (!assignment) return { ok: false, message: "This task no longer has an active match to complete." };
-    const { error: completeError } = await supabase.rpc("complete_task_assignment", { p_assignment_id: assignment.id });
-    if (completeError) return collaborationFailure(completeError);
-    await refresh();
-    return { ok: true };
-  }, [assignments, refresh, userId]);
-
   const requestCompletion = useCallback(async (assignmentId: string): Promise<CompletionCodeResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.helperId === userId && candidate.status === "accepted");
@@ -248,8 +276,15 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     if (!assignment) return { ok: false, message: "This task no longer has an active match to complete." };
     const trimmed = code.trim();
     if (!/^\d{4}$/.test(trimmed)) return { ok: false, message: "Enter the four digits the helper read out." };
-    const { error: confirmError } = await supabase.rpc("confirm_task_completion", { p_assignment_id: assignment.id, p_code: trimmed });
+    const { data, error: confirmError } = await supabase.rpc("confirm_task_completion", { p_assignment_id: assignment.id, p_code: trimmed });
     if (confirmError) return collaborationFailure(confirmError);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { ok: false, message: "Micro could not verify the completion response." };
+    }
+    const result = data as { ok?: unknown; error_code?: unknown };
+    if (result.ok !== true) {
+      return collaborationFailure({ message: typeof result.error_code === "string" ? result.error_code : "completion_confirmation_failed" });
+    }
     await refresh();
     return { ok: true };
   }, [assignments, refresh, userId]);
@@ -279,24 +314,91 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     return { ok: true };
   }, [assignments, refresh, userId]);
 
-  const sendMessage = useCallback(async (assignmentId: string, body: string): Promise<CollaborationResult> => {
+  const markThreadRead = useCallback(async (assignmentId: string, messageId: string): Promise<CollaborationResult> => {
+    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
+    if (!assignments.some((candidate) => candidate.id === assignmentId)) {
+      return { ok: false, message: "This protected match is no longer available." };
+    }
+    const { data, error: readError } = await supabase.rpc("mark_task_thread_read", {
+      p_assignment_id: assignmentId,
+      p_message_id: messageId,
+    });
+    if (readError) return collaborationFailure(readError);
+
+    const returned = Array.isArray(data) ? data[0] : data;
+    if (returned && typeof returned === "object") {
+      const cursor = threadReadCursorFromRow(returned as Record<string, unknown>);
+      setReadCursorsByAssignment((current) => ({ ...current, [cursor.assignmentId]: cursor }));
+    } else {
+      await refresh();
+    }
+    return { ok: true };
+  }, [assignments, refresh, userId]);
+
+  const sendMessage = useCallback(async (assignmentId: string, body: string, clientNonce: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const trimmed = body.trim();
     if (!trimmed) return { ok: false, message: "Write a message first." };
     if (trimmed.length > 2000) return { ok: false, message: "Keep messages at 2,000 characters or fewer." };
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientNonce)) {
+      return { ok: false, message: "This message retry token is invalid. Please try again." };
+    }
     const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.status === "accepted");
     if (!assignment) return { ok: false, message: "Messages unlock only after a protected match." };
     const { error: insertError } = await supabase
       .from("task_messages")
-      .insert({ assignment_id: assignment.id, client_nonce: crypto.randomUUID(), body: trimmed });
-    if (insertError) return collaborationFailure(insertError);
+      .insert({ assignment_id: assignment.id, client_nonce: clientNonce, body: trimmed });
+    if (insertError?.code === "23505") {
+      const { data: existing, error: reconciliationError } = await supabase
+        .from("task_message_details")
+        .select("id, assignment_id, sender_id, client_nonce, body")
+        .eq("assignment_id", assignment.id)
+        .eq("sender_id", userId)
+        .eq("client_nonce", clientNonce)
+        .maybeSingle();
+      if (reconciliationError || !existing || existing.body !== trimmed) {
+        return collaborationFailure(reconciliationError ?? insertError);
+      }
+    } else if (insertError) {
+      return collaborationFailure(insertError);
+    }
     await refresh();
     return { ok: true };
   }, [assignments, refresh, userId]);
 
   return useMemo(
-    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, requestCompletion, confirmCompletion, fetchCompletionCode, completeAssignment, sendMessage, refresh }),
-    [acceptTask, assignments, cancelAssignment, completeAssignment, confirmCompletion, error, fetchCompletionCode, loading, messagesByAssignment, refresh, requestCompletion, sendMessage, withdrawAssignment],
+    () => ({
+      assignments,
+      messagesByAssignment,
+      readCursorsByAssignment,
+      error,
+      loading,
+      acceptTask,
+      withdrawAssignment,
+      cancelAssignment,
+      requestCompletion,
+      confirmCompletion,
+      fetchCompletionCode,
+      markThreadRead,
+      sendMessage,
+      refresh,
+    }),
+    [
+      acceptTask,
+      assignments,
+      cancelAssignment,
+      confirmCompletion,
+      error,
+      fetchCompletionCode,
+      loading,
+      markThreadRead,
+      messagesByAssignment,
+      readCursorsByAssignment,
+      refresh,
+      requestCompletion,
+      sendMessage,
+      withdrawAssignment,
+    ],
   );
 }
 
@@ -315,15 +417,12 @@ function collaborationFailure(error: { code?: string; message?: string }): Colla
   if (message.includes("task_private_address_required")) return { ok: false, message: "The requester must add a protected task address before matching." };
   if (message.includes("assignment_not_found")) return { ok: false, message: "This protected match no longer exists." };
   if (message.includes("assignment_withdrawal_not_allowed")) return { ok: false, message: "Only the active helper can withdraw from this task." };
-  if (message.includes("assignment_completion_not_allowed")) return { ok: false, message: "Only the requester can mark this matched task complete." };
-  if (message.includes("assignment_cancellation_not_allowed")) return { ok: false, message: "Only the requester can cancel this matched task." };
-  // The wrong-code and lockout cases are the ones a real pair will actually
-  // hit, standing next to each other, so they say what to do next.
-  if (message.includes("completion_code_incorrect")) return { ok: false, message: "That code does not match. Ask the helper to read it out again." };
-  if (message.includes("completion_code_locked")) return { ok: false, message: "Too many wrong codes. Try again in 15 minutes." };
-  if (message.includes("completion_not_requested_yet")) return { ok: false, message: "The helper has not marked this job finished yet." };
-  if (message.includes("completion_request_not_allowed")) return { ok: false, message: "Only the matched helper can mark this job finished." };
-  if (message.includes("completion_confirmation_not_allowed")) return { ok: false, message: "Only the requester can enter the completion code." };
+  if (message.includes("assignment_cancellation_not_allowed")) return { ok: false, message: "Only the requester can cancel this active task." };
+  if (message.includes("completion_request_not_allowed")) return { ok: false, message: "Only the active helper can request completion." };
+  if (message.includes("completion_confirmation_not_allowed")) return { ok: false, message: "Only the requester can confirm completion." };
+  if (message.includes("completion_not_requested_yet")) return { ok: false, message: "The helper has not requested completion yet." };
+  if (message.includes("completion_code_incorrect")) return { ok: false, message: "That code does not match. Ask the helper to read it again." };
+  if (message.includes("completion_code_locked")) return { ok: false, message: "Too many incorrect codes. Wait 15 minutes before trying again." };
   if (message.includes("live_authenticated_session_required")) return { ok: false, message: "Your session needs to be refreshed before continuing." };
   if (message.includes("message_not_allowed") || message.includes("not_a_task_participant")) return { ok: false, message: "Only the matched requester and helper can use this thread." };
   return { ok: false, message: error.message || "Micro could not complete that action." };
