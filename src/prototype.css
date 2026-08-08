@@ -565,7 +565,7 @@
 
 /* Chosen task, composed listing, and catalog-derived facts — step 3. */
 /* Sticky so the price and the way back to the catalog never scroll away. */
-.chosen-task { position: sticky; z-index: 61; top: 0; display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: center; min-height: 112px; margin: -70px -18px 16px; padding: 62px 16px 8px; border-bottom: 1px solid rgba(210, 225, 235, 0.72); border-radius: 0; background: linear-gradient(180deg, rgba(244, 249, 253, 0.98), rgba(244, 249, 253, 0.78)); box-shadow: 0 8px 18px rgba(38, 71, 99, 0.05); -webkit-backdrop-filter: blur(15px); backdrop-filter: blur(15px); }
+.chosen-task { position: sticky; z-index: 61; top: 0; display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: center; min-height: 112px; margin: -70px -18px 16px; padding: 62px 16px 8px; border-bottom: 1px solid rgba(210, 225, 235, 0.72); border-radius: 0; background: #f4f9fd; box-shadow: 0 8px 18px rgba(38, 71, 99, 0.05); }
 .mobile-app-viewport[data-platform="android"] .chosen-task { min-height: 90px; padding-top: 40px; }
 .chosen-task-body { display: grid; gap: 2px; min-width: 0; }
 .chosen-task-side,
@@ -583,6 +583,46 @@
 .chosen-task-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 13px; background: #fffdfa; color: var(--micro-teal); }
 .chosen-task strong { display: block; font-size: 15px; line-height: 1.2; }
 .chosen-task small { display: none; }
+.standard-page.activity-page { padding-top: 148px; }
+.activity-toolbar {
+  position: absolute;
+  z-index: 61;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 48px;
+  align-items: center;
+  min-height: 112px;
+  padding: 62px 16px 8px;
+  border-bottom: 1px solid rgba(210, 225, 235, 0.72);
+  background: linear-gradient(180deg, rgba(244, 249, 253, 0.98), rgba(244, 249, 253, 0.78));
+  box-shadow: 0 8px 18px rgba(38, 71, 99, 0.05);
+  -webkit-backdrop-filter: blur(15px);
+  backdrop-filter: blur(15px);
+}
+.activity-toolbar > button {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--micro-ink);
+}
+.activity-toolbar > h1 {
+  margin: 0;
+  justify-self: center;
+  color: var(--micro-ink);
+  font-family: var(--micro-display);
+  font-size: 20px;
+  font-weight: 790;
+  line-height: 1;
+}
+.mobile-app-viewport[data-platform="android"] .standard-page.activity-page { padding-top: 122px; }
+.mobile-app-viewport[data-platform="android"] .activity-toolbar { min-height: 90px; padding-top: 40px; }
 .composed-listing { display: grid; gap: 8px; padding: 15px; border: 1px solid var(--micro-line); border-radius: 16px; background: #fffdfa; }
 .composed-listing h3 { margin: 0; font-size: 18px; line-height: 1.2; }
 .composed-listing > p:not(.eyebrow) { margin: 0; color: #46566a; font-size: 13px; line-height: 1.45; }
@@ -1868,7 +1908,7 @@
   border-color: #dce6ee;
   background: rgba(255, 255, 255, 0.97);
 }
-.route-header > h1 { overflow: hidden; color: var(--micro-ink); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.route-header > h1 { overflow: hidden; color: var(--micro-ink); font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
 .header-action-slot { color: var(--micro-teal); }
 
 .detail-hero { padding: 18px; border-radius: 21px; background: #f2f7fb; }

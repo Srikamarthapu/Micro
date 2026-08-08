@@ -2100,13 +2100,10 @@ function ActivityScreen() {
     !hasActiveCommitment;
 
   return (
-    <MobileScroll className="app-screen tab-scroll">
-      <div className="standard-page nav-padded">
-        <button className="tab-back-link" onClick={() => setActiveTab("profile")}><CaretLeft size={15} weight="bold" /> Profile</button>
-        {/* The eyebrow used to repeat the first section heading and the subtitle
-            explained a convention the cards already demonstrate. */}
-        <PageTitle title="Activity" />
-        {showAttentionBanner ? <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section> : null}
+    <>
+      <MobileScroll className="app-screen tab-scroll">
+        <div className="standard-page nav-padded activity-page">
+          {showAttentionBanner ? <section className="status-summary" role="status" aria-live="polite"><span className="status-orbit">{hasActiveCommitment ? <Bell size={24} weight="fill" /> : <ListChecks size={24} weight="bold" />}</span><div><strong>{attentionLabel}</strong><span>{attentionCopy}</span>{!hasActiveCommitment && !showReopened && persona !== "guardian" ? <button className="status-browse-action" onClick={() => setActiveTab("nearby")}>{participationReady ? "Browse nearby" : "Browse without joining"}<ArrowRight size={16} /></button> : null}</div></section> : null}
         {isLiveNonprofit ? <button className="organization-entry" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}>
           <span className="organization-entry-icon"><Buildings size={23} weight="fill" /></span>
           <span className="organization-entry-copy">
@@ -2151,7 +2148,13 @@ function ActivityScreen() {
             reaches it, so it sits after the tasks instead of ahead of them. */}
         <button className="notification-entry" onClick={() => flow.push(makeNotificationsScreen())}><span><Bell size={20} weight="fill" /><strong>Notifications</strong></span><small>{isLiveNonprofit ? "Tasks + sponsorships" : "Role-aware updates"}</small><ArrowRight size={18} /></button>
       </div>
-    </MobileScroll>
+      </MobileScroll>
+      <header className="activity-toolbar">
+        <button type="button" aria-label="Back to Profile" onClick={() => setActiveTab("profile")}><CaretLeft size={25} weight="bold" /></button>
+        <h1>Activity</h1>
+        <span aria-hidden="true" />
+      </header>
+    </>
   );
 }
 
