@@ -13,7 +13,7 @@ import type { Task } from "./types";
  * forget, and no query that could widen by accident.
  */
 
-export type AssignmentStatus = "accepted" | "withdrawn" | "completed";
+export type AssignmentStatus = "accepted" | "withdrawn" | "completed" | "canceled";
 
 export type TaskAssignment = {
   id: string;
@@ -81,6 +81,7 @@ export type CollaborationState = {
   loading: boolean;
   acceptTask: (taskId: string) => Promise<CollaborationResult>;
   withdrawAssignment: (assignmentId: string) => Promise<CollaborationResult>;
+  cancelAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   completeAssignment: (assignmentId: string) => Promise<CollaborationResult>;
   sendMessage: (assignmentId: string, body: string) => Promise<CollaborationResult>;
   refresh: () => Promise<void>;
@@ -95,6 +96,7 @@ export function emptyCollaboration(): CollaborationState {
     loading: false,
     acceptTask: unavailable,
     withdrawAssignment: unavailable,
+    cancelAssignment: unavailable,
     completeAssignment: unavailable,
     sendMessage: unavailable,
     refresh: async () => {},
@@ -218,6 +220,16 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
     return { ok: true };
   }, [assignments, refresh, userId]);
 
+  const cancelAssignment = useCallback(async (assignmentId: string): Promise<CollaborationResult> => {
+    if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
+    const assignment = assignments.find((candidate) => candidate.id === assignmentId && candidate.requesterId === userId && candidate.status === "accepted");
+    if (!assignment) return { ok: false, message: "This task no longer has an active match to cancel." };
+    const { error: cancelError } = await supabase.rpc("cancel_task_assignment", { p_assignment_id: assignment.id });
+    if (cancelError) return collaborationFailure(cancelError);
+    await refresh();
+    return { ok: true };
+  }, [assignments, refresh, userId]);
+
   const sendMessage = useCallback(async (assignmentId: string, body: string): Promise<CollaborationResult> => {
     if (!supabase || !userId) return { ok: false, message: "Micro is not connected to a project." };
     const trimmed = body.trim();
@@ -234,8 +246,8 @@ export function useCollaboration(userId: string | null, accessToken: string | nu
   }, [assignments, refresh, userId]);
 
   return useMemo(
-    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, completeAssignment, sendMessage, refresh }),
-    [acceptTask, assignments, completeAssignment, error, loading, messagesByAssignment, refresh, sendMessage, withdrawAssignment],
+    () => ({ assignments, messagesByAssignment, error, loading, acceptTask, withdrawAssignment, cancelAssignment, completeAssignment, sendMessage, refresh }),
+    [acceptTask, assignments, cancelAssignment, completeAssignment, error, loading, messagesByAssignment, refresh, sendMessage, withdrawAssignment],
   );
 }
 

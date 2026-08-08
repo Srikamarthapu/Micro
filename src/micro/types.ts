@@ -141,6 +141,12 @@ export type PostDraft = {
   /** One of `dateChoicesFor(now)` — derived from the date, not a fixed enum. */
   dateChoice: string;
   startTime: string;
+  /**
+   * How long the requester says the job will take. Absent means the duration
+   * the chosen task suggests, which is the starting point for every listing —
+   * only a deliberate adjustment is recorded here.
+   */
+  durationMinutes?: number;
   privateAddress: string;
   /**
    * Where the device says the task is. Optional: a listing can still be posted

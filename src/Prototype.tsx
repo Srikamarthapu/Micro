@@ -1307,12 +1307,19 @@ function jobStageFor(task: Task, now: Date): JobStage {
  * so nothing about arriving requires digging through another tab.
  */
 function ActiveJobPanel({ task, now }: { task: Task; now: Date }) {
+  const flow = useFlow();
   const { setActiveTab, setSelectedTaskId, profilePhotos, refreshRemoteTasks, collaboration } = useMicro();
   const distanceLabel = useTaskDistanceLabel();
   const detail = getTaskDetails(task);
   const protectedAddress = task.ownerId ? task.privateAddress?.trim() : detail.address;
   const stage = jobStageFor(task, now);
-  const openJob = () => { setSelectedTaskId(task.id); setActiveTab("activity"); };
+  // Straight to the job. Handing off to the Activity tab would land on a list
+  // whose only relevant row is this same job, so the tap that says "open job"
+  // has to be the tap that opens it.
+  const openJob = () => {
+    setSelectedTaskId(task.id);
+    flow.push(task.mode === "community" ? makeCommunityJourneyScreen(task) : makeActivityJourneyScreen(task));
+  };
   return (
     <article className="active-job" data-stage={stage}>
       <header className="active-job-head">
@@ -1780,6 +1787,17 @@ function PostScreen() {
   const [scopeOpen, setScopeOpen] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
+  const [locationAsked, setLocationAsked] = useState(false);
+
+  const captureLocation = useCallback(async () => {
+    setLocating(true);
+    setLocationError("");
+    const { point, error } = await readDeviceLocation();
+    setLocating(false);
+    if (!point) { setLocationError(error ?? "Your location could not be read."); return; }
+    if (!areaForPoint(point)) { setLocationError("You are outside the demo neighborhoods, so the profile area is used instead."); return; }
+    setField("coords", point);
+  }, []);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -1792,7 +1810,7 @@ function PostScreen() {
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedTimeRef = useRef<HTMLButtonElement>(null);
   const [composingCustom, setComposingCustom] = useState(false);
-  const { mode, templateId, selections, customTitle, customDetails, customCategoryId, customMinutes, customCompletionId, dateChoice, startTime, privateAddress, coords, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
+  const { mode, templateId, selections, customTitle, customDetails, customCategoryId, customMinutes, customCompletionId, dateChoice, startTime, durationMinutes, privateAddress, coords, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
   // A shared location names its own neighborhood; without one the listing falls
   // back to the approximate area set in Profile.
   const listingArea = (coords && areaForPoint(coords)) ?? areaById(profileAreaId);
@@ -1807,7 +1825,22 @@ function PostScreen() {
   const customProblem = customTextProblem(customTitle, customDetails);
   // Every published word comes from here: the requester picks a catalog task and
   // answers its bounded options, and the listing is composed from that.
-  const listing = useMemo(() => composeListing(template, selections), [selections, template]);
+  const composed = useMemo(() => composeListing(template, selections), [selections, template]);
+  // The task suggests a duration; the requester knows their own job. An
+  // adjustment replaces the suggestion everywhere downstream — the published
+  // listing, the preview, and the hourly equivalent all read from `listing`.
+  const listing = useMemo(
+    () => durationMinutes && durationMinutes !== composed.minutes
+      ? { ...composed, minutes: durationMinutes, duration: `${durationMinutes} min` }
+      : composed,
+    [composed, durationMinutes],
+  );
+  // The suggestion always stays offered, even when it is not one of the round
+  // numbers, so returning to it never needs the draft cleared.
+  const durationChoices = useMemo(
+    () => [...new Set([...customDurations, composed.minutes])].sort((first, second) => first - second),
+    [composed.minutes],
+  );
   const openCategory = openCategoryId ? categoryById(openCategoryId) : undefined;
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1832,6 +1865,9 @@ function PostScreen() {
       selections: nextSelections,
       mode: next.modes.includes(current.mode) ? current.mode : (next.modes[0] as TaskMode),
       amount: String(composeListing(next, nextSelections).suggestedPay),
+      // A different job is a different length. Carrying the last adjustment
+      // over would quietly mis-state how long this one takes.
+      durationMinutes: undefined,
       riskConfirmed: false,
     }));
     setStep(1);
@@ -1845,6 +1881,7 @@ function PostScreen() {
       selections: {},
       mode: "paid",
       amount: String(composeListing(buildCustomTemplate(customInput), {}).suggestedPay),
+      durationMinutes: undefined,
       riskConfirmed: false,
     }));
     setComposingCustom(false);
@@ -1916,7 +1953,13 @@ function PostScreen() {
   useEffect(() => {
     if (step !== 2) return;
     requestAnimationFrame(() => selectedTimeRef.current?.scrollIntoView({ block: "nearest", inline: "center" }));
-  }, [step]);
+    // Ask for the location on arrival rather than waiting to be tapped: a task
+    // placed where it actually is beats one placed at a neighborhood centre.
+    // Asked once per draft, so a refusal is not re-prompted on every visit.
+    if (locationAsked || coords) return;
+    setLocationAsked(true);
+    void captureLocation();
+  }, [captureLocation, coords, locationAsked, step]);
 
   const publish = () => {
     if (!scopeValid || !logisticsValid) return;
@@ -1985,6 +2028,9 @@ function PostScreen() {
         p_custom_category_id: template.isCustom ? customCategoryId : null,
         p_custom_minutes: template.isCustom ? customMinutes : null,
         p_custom_completion_id: template.isCustom ? customCompletionId : null,
+        // The requester's stated length. The server bounds it and composes
+        // everything else, so this is the one figure the browser gets to set.
+        p_duration_minutes: listing.minutes,
       });
     if (error || !data) {
       setPublishing(false);
@@ -2092,7 +2138,7 @@ function PostScreen() {
                   const CategoryIcon = entry.icon;
                   return <button key={entry.id} className="category-tile" aria-pressed={customCategoryId === entry.id} data-active={customCategoryId === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setField("customCategoryId", entry.id); setRiskConfirmed(false); }}><span className="category-tile-icon"><CategoryIcon size={21} weight="duotone" /></span><span className="category-tile-body"><strong>{entry.label}</strong></span></button>;
                 })}</div></fieldset>
-                <fieldset className="choice-fieldset compact-choice-fieldset"><legend>How long</legend><div className="segmented-row" data-choices={customDurations.length}>{customDurations.map((value) => <button key={value} aria-pressed={customMinutes === value} data-active={customMinutes === value ? "true" : "false"} onClick={() => { keyboard.hide(); setField("customMinutes", value); }}>{value} min</button>)}</div></fieldset>
+                <fieldset className="choice-fieldset compact-choice-fieldset"><legend>How long</legend><div className="segmented-row" data-choices={customDurations.length}>{customDurations.map((value) => <button key={value} aria-pressed={customMinutes === value} data-active={customMinutes === value ? "true" : "false"} onClick={() => { keyboard.hide(); setPostDraft((current) => ({ ...current, customMinutes: value, durationMinutes: undefined })); }}>{value} min</button>)}</div></fieldset>
                 <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Completion check</legend><div className="segmented-row" data-choices={customCompletions.length}>{customCompletions.map((entry) => <button key={entry.id} aria-pressed={customCompletionId === entry.id} data-active={customCompletionId === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setField("customCompletionId", entry.id); }}>{entry.label}</button>)}</div></fieldset>
                 <div className="boundary-note"><ShieldCheck size={20} weight="fill" /><span>{categoryById(customCategoryId)?.boundary}</span></div>
                 {customProblem ? <p className="form-error" role="alert">{customProblem}</p> : null}
@@ -2211,7 +2257,11 @@ function PostScreen() {
             <Carousel ariaLabel="Start time" className="time-rail" contentClassName="time-rail-track">
               {timeSlots.map((slot) => <button key={slot} ref={slot === startTime ? selectedTimeRef : undefined} className="time-chip" aria-pressed={startTime === slot} data-active={startTime === slot ? "true" : "false"} onClick={() => setStartTime(slot)}>{slot}</button>)}
             </Carousel>
-            <div className="derived-facts"><div><span>Duration</span><strong>{listing.duration}</strong></div><div><span>Set by</span><strong>The task you picked</strong></div></div>
+            <div className="section-label">Duration · <span className="section-label-value">{listing.duration}</span></div>
+            <Carousel ariaLabel="Duration" className="time-rail" contentClassName="time-rail-track">
+              {durationChoices.map((value) => <button key={value} className="time-chip" aria-pressed={listing.minutes === value} data-active={listing.minutes === value ? "true" : "false"} onClick={() => setField("durationMinutes", value)}>{value} min</button>)}
+            </Carousel>
+            <p className="composed-meta">{listing.minutes === composed.minutes ? `Suggested by ${template.isCustom ? "the length you set" : "the task you picked"}. Change it to match your job.` : `Adjusted by you · ${composed.duration} suggested for this task.`}</p>
             <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
             {/* The address tells a matched helper which door; the device
                 location tells the map which neighborhood. Optional, because a
@@ -2219,19 +2269,14 @@ function PostScreen() {
             <div className="location-share" data-located={coords ? "true" : "false"}>
               <span className="location-share-icon"><MapPin size={20} weight="fill" aria-hidden="true" /></span>
               <div>
-                <strong>{coords ? `Location shared · ${listingArea.label}` : "Use my current location"}</strong>
-                <small>{coords ? "Neighbors still see only the approximate area, never this point." : "Places the task on the map near where you are. Optional — the area from your profile is used otherwise."}</small>
+                <strong>{coords ? `Location shared · ${listingArea.label}` : locating ? "Finding your location…" : "Location not shared"}</strong>
+                <small>{coords
+                  ? "Neighbors still see only the approximate area, never this point."
+                  : locating
+                    ? "Micro places the task where you are so neighbors see a real distance."
+                    : "Without it the task sits at your neighborhood centre, so distances are rough."}</small>
               </div>
-              <button className="secondary-button" disabled={locating} onClick={async () => {
-                keyboard.hide();
-                setLocating(true);
-                setLocationError("");
-                const { point, error } = await readDeviceLocation();
-                setLocating(false);
-                if (!point) { setLocationError(error ?? "Your location could not be read."); return; }
-                if (!areaForPoint(point)) { setLocationError("You are outside the demo neighborhoods, so the profile area is used instead."); return; }
-                setField("coords", point);
-              }}>{locating ? "Locating…" : coords ? "Update" : "Share location"}</button>
+              <button className="secondary-button" disabled={locating} onClick={() => { keyboard.hide(); void captureLocation(); }}>{locating ? "Locating…" : coords ? "Update" : "Try again"}</button>
             </div>
             {coords ? <button className="text-button" onClick={() => setField("coords", undefined)}>Use my profile area instead</button> : null}
             {locationError ? <p className="form-error" role="status">{locationError}</p> : null}
@@ -2616,13 +2661,14 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
   const auth = useAuth();
   const { collaboration, setActiveTab, setAcceptedTaskIds, setClosedTaskIds, setCommunityStage, setPaidStage, setTaskEvents } = useMicro();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const userId = auth.session?.user.id ?? null;
   const isRequester = assignment.requesterId === userId;
   const isHelper = assignment.helperId === userId;
   const active = assignment.status === "accepted";
-  const statusLabel = assignment.status === "completed" ? "Completed" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched";
+  const statusLabel = assignment.status === "completed" ? "Completed" : assignment.status === "canceled" ? "Canceled" : assignment.status === "withdrawn" ? "Commitment ended" : "Matched";
   const roleLabel = isRequester ? "Requester" : isHelper ? (task.mode === "community" ? "Volunteer" : "Helper") : "Participant";
 
   const settle = async () => {
@@ -2651,14 +2697,46 @@ function LiveAssignmentJourney({ task, assignment }: { task: Task; assignment: T
     setConfirmOpen(false);
   };
 
+  // Calling the task off. The requester cancels it outright; the helper's
+  // equivalent is withdrawing, which puts the listing back in front of other
+  // neighbors. Either way the thread closes, and the database is what writes
+  // the line saying so — sending is shut the moment the assignment settles.
+  const cancelActivity = async () => {
+    if (!active || busy || (!isRequester && !isHelper)) return;
+    setBusy(true);
+    setError("");
+    const result = isRequester
+      ? await collaboration.cancelAssignment(assignment.id)
+      : await collaboration.withdrawAssignment(assignment.id);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message ?? "Micro could not cancel this activity.");
+      return;
+    }
+    setAcceptedTaskIds((current) => current.filter((id) => id !== task.id));
+    setClosedTaskIds((current) => current.includes(task.id) ? current : [task.id, ...current]);
+    if (task.mode === "community") setCommunityStage("Canceled");
+    else setPaidStage(isRequester ? "Completed" : "Reopened");
+    appendTaskEvent(setTaskEvents, task.id, isRequester
+      ? "Requester canceled the activity. The listing was paused and the participant thread retained read-only."
+      : "Helper canceled the activity and withdrew. The listing is available for a new eligible helper.");
+    setCancelOpen(false);
+  };
+
   return <MobileScroll className="app-screen route-scroll"><div className="route-page route-bottom-pad">
     <div className="activity-hero"><div className={`status-badge ${task.mode === "community" ? "community-status" : ""}`}>{task.mode === "community" ? <HandHeart size={14} weight="fill" /> : <ShieldCheck size={14} weight="fill" />} {statusLabel}</div><h1>{task.title}</h1><p>{roleLabel} · {task.time} · {task.area}</p></div>
     <section className="commitment-brief"><div><span>Agreed scope</span><strong>{task.included}</strong></div><div><span>Not included</span><strong>{task.excluded}</strong></div><div><span>Protected meeting place</span><strong>{task.privateAddress || "Open the matched task details before traveling"}</strong></div></section>
     {active ? null : <section className="workflow-card"><p className="eyebrow">Retained task record</p><h2>{assignment.status === "completed" ? "The requester closed this match." : "The helper ended this commitment."}</h2><p>The participant thread remains readable for both accounts, but new messages and task actions are closed.</p></section>}
     <button className="secondary-button workflow-message" onClick={() => { setActiveTab("messages"); flow.pop(); }}>Open protected messages</button>
+    {active && isRequester ? <>
+      {/* Finishing well is the outcome this screen is for, so it gets the
+          full-width positive button rather than a muted red line of text. */}
+      <button className="primary-button complete-match-button" disabled={busy} onClick={() => setConfirmOpen((current) => !current)}><CheckCircle size={22} weight="fill" /> {confirmOpen ? "Keep this match active" : "Mark this match complete"}</button>
+      {confirmOpen ? <section className="cancellation-card"><strong>Complete this live match?</strong><p>The listing will be paused, both participants will keep a read-only thread, and this cannot be undone in the app.</p><button className="primary-button" disabled={busy} onClick={() => { void settle(); }}>{busy ? "Updating…" : "Confirm completion"}</button></section> : null}
+    </> : null}
     {active && (isRequester || isHelper) ? <>
-      <button className="quiet-action route-quiet-action" onClick={() => setConfirmOpen((current) => !current)}>{confirmOpen ? <X size={18} /> : isRequester ? <CheckCircle size={18} weight="fill" /> : <Warning size={18} />} {confirmOpen ? "Keep this match active" : isRequester ? "Mark this match complete" : "Withdraw from this commitment"}</button>
-      {confirmOpen ? <section className="cancellation-card"><strong>{isRequester ? "Complete this live match?" : "Withdraw from this live match?"}</strong><p>{isRequester ? "The listing will be paused, both participants will keep a read-only thread, and this cannot be undone in the app." : "The listing will reopen for another eligible helper. Both participants keep this thread as a read-only record."}</p><button className={isRequester ? "primary-button" : "danger-button"} disabled={busy} onClick={() => { void settle(); }}>{busy ? "Updating…" : isRequester ? "Confirm completion" : "Confirm withdrawal"}</button></section> : null}
+      <button className="quiet-action route-quiet-action" onClick={() => setCancelOpen((current) => !current)}>{cancelOpen ? <X size={18} /> : <Warning size={18} />} {cancelOpen ? "Keep this activity" : "Cancel activity"}</button>
+      {cancelOpen ? <section className="cancellation-card"><strong>Are you sure you want to finish and cancel this task?</strong><p>{isRequester ? "The task is called off, the listing is paused rather than reopened, and both participants keep this thread as a read-only record." : "You leave this commitment and the listing reopens for another eligible helper. Both participants keep this thread as a read-only record."}</p><div className="cancellation-answers"><button className="danger-button" disabled={busy} onClick={() => { void cancelActivity(); }}>{busy ? "Canceling…" : "Yes, cancel this task"}</button><button className="secondary-button" disabled={busy} onClick={() => setCancelOpen(false)}>No, keep it</button></div><p className="fine-print">Everyone in the thread is told the activity was canceled.</p></section> : null}
     </> : null}
     {error ? <p className="form-error" role="alert">{error}</p> : null}
   </div></MobileScroll>;
@@ -3439,7 +3517,9 @@ function ProfileScreen() {
         <PageTitle title="Profile" />
         {/* The photo you chose belongs on your own profile, not only on a map
             pin, and the card is where anyone would tap to change it. */}
-        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p>{isLiveAccount ? null : <div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div>}</div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
+        {/* The photo you chose belongs on your own profile, not only on a map
+            pin, and the card is where anyone would tap to change it. */}
+        <section className="profile-card"><button className="profile-avatar-button" aria-label={profilePhoto ? "Change your profile photo" : "Add a profile photo"} onClick={() => setPhotoOpen(true)}>{profilePhoto ? <PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Your profile photo" /> : <span className="avatar large">{profile.initials}</span>}<span className="profile-avatar-edit" aria-hidden="true"><Camera size={13} weight="fill" /></span></button><div><h2>{profile.name}</h2><p>{profile.detail}</p>{isLiveAccount ? null : <div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div>}</div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
         <section className="settings-group">
@@ -3457,10 +3537,10 @@ function ProfileScreen() {
           <button className="settings-row sign-out-row" disabled={auth.busy} onClick={() => void signOut()}><span className="settings-icon"><SignOut size={21} weight="bold" /></span><span><strong>{isLiveAccount ? "Sign out" : "Exit local demo"}</strong><small>{isLiveAccount ? "Return to Micro's welcome screen" : "Return to account setup"}</small></span><ArrowRight size={18} /></button>
           {accountActionError ? <p className="form-error account-action-error" role="alert">{accountActionError}</p> : null}
         </section>
-        {!isLiveAccount ? <section className="settings-group"><h2>Participation fixtures</h2><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></section> : null}
-        <section className="settings-group"><h2>Account &amp; safety</h2><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></section>
-        <section className="settings-group"><h2>Preferences</h2><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Map marker photo</strong><small>{profilePhoto ? "Local photo selected" : "Default person icon"} · map only</small></span><ArrowRight size={18} /></button></section>
-        {isLiveAccount ? <section className="settings-group destructive-settings-group"><h2>Account controls</h2><button className="settings-row delete-account-row" onClick={() => flow.push(makeDeleteAccountScreen())}><span className="settings-icon"><Trash size={21} weight="bold" /></span><span><strong>Delete account</strong><small>Permanently remove your sign-in and Micro profile</small></span><ArrowRight size={18} /></button></section> : null}
+        {!isLiveAccount ? <SettingsGroup title="Participation fixtures" summary="Youth Mode, guardian approval, and demo roles"><button className="settings-row" onClick={() => flow.push(makeYouthScreen())}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Youth Mode</strong><small>{guardianSupervisedTaskId && persona !== "adult" ? guardianSupervisionStatus : youthApproved ? "Guardian approved pantry task" : youthPending ? "Guardian review pending" : "Task-specific guardian approval"}</small></span><span className="settings-status">{guardianSupervisedTaskId && persona !== "adult" ? "Active" : youthApproved ? "Approved" : youthPending ? "Pending" : "Review"}</span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeDemoAccessScreen())}><span className="settings-icon"><HandHeart size={21} weight="fill" /></span><span><strong>Demo identity &amp; roles</strong><small>Adult · youth · guardian access states</small></span><ArrowRight size={18} /></button></SettingsGroup> : null}
+        <SettingsGroup title="Account &amp; safety" summary="Saved tasks, payments, blocked people, and support"><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("saved"))}><span className="settings-icon orange"><Tag size={21} weight="fill" /></span><span><strong>Saved tasks</strong><small>{savedCount ? `${savedCount} saved ${savedCount === 1 ? "task" : "tasks"}` : "No saved tasks"}</small></span>{savedCount ? <span className="settings-status">{savedCount}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("payments"))}><span className="settings-icon"><CurrencyDollar size={21} weight="bold" /></span><span><strong>Payments &amp; payouts</strong><small>Test-mode methods and receipts</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("blocked"))}><span className="settings-icon purple"><ShieldCheck size={21} weight="fill" /></span><span><strong>Blocked people</strong><small>{blockedRequesterNames.length ? `${blockedRequesterNames.length} local fixture` : "No one blocked"}</small></span>{blockedRequesterNames.length ? <span className="settings-status">{blockedRequesterNames.length}</span> : null}<ArrowRight size={18} /></button><button className="settings-row" onClick={() => flow.push(makeProfileInfoScreen("support"))}><span className="settings-icon blue"><Info size={21} weight="fill" /></span><span><strong>Help &amp; support</strong><small>{reportedTaskIds.length ? `${reportedTaskIds.length} task in review` : "Safety guidance and reports"}</small></span><ArrowRight size={18} /></button></SettingsGroup>
+        <SettingsGroup title="Preferences" summary="Notifications, approximate area, and your photo"><button className="settings-row" aria-pressed={notificationsEnabled} onClick={() => setNotificationsEnabled(!notificationsEnabled)}><span className="settings-icon blue"><Bell size={21} weight="fill" /></span><span><strong>Task notifications</strong><small>{notificationsEnabled ? "Matches, messages, and status changes" : "Paused for this preview"}</small></span><span className="toggle" data-on={notificationsEnabled ? "true" : "false"}><span /></span></button><button className="settings-row" onClick={() => setAreaOpen(true)}><span className="settings-icon orange"><MapPin size={21} weight="fill" /></span><span><strong>Approximate area</strong><small>{profileArea} · about 3 miles · preview only</small></span><ArrowRight size={18} /></button><button className="settings-row" onClick={() => setPhotoOpen(true)}><span className="settings-icon"><Camera size={21} weight="fill" /></span><span><strong>Profile photo</strong><small>{profilePhoto ? "Photo selected" : "Default person icon"} · your profile and map marker</small></span><ArrowRight size={18} /></button></SettingsGroup>
+        {isLiveAccount ? <SettingsGroup title="Account controls" summary="Delete your account"><button className="settings-row delete-account-row" onClick={() => flow.push(makeDeleteAccountScreen())}><span className="settings-icon"><Trash size={21} weight="bold" /></span><span><strong>Delete account</strong><small>Permanently remove your sign-in and Micro profile</small></span><ArrowRight size={18} /></button></SettingsGroup> : null}
         <div className="demo-card"><Info size={20} /><div><strong>{isLiveAccount ? "Connected account" : "UI prototype"}</strong><span>{isLiveAccount ? "Supabase handles this account, organization access, real task listings, protected matches, private addresses, and participant messages. Payments, moderation, profile photos, and push notifications remain preview-only." : "Payments, identity, locations, messages, and task data are realistic local fixtures—not live services."}</span></div></div>
       </div></MobileScroll><BottomSheet open={areaOpen} onOpenChange={setAreaOpen} title="Profile area" description="Only an approximate neighborhood appears before a protected match." snap={0.44}><div className="sheet-form">{areas.map((option) => <button key={option.id} className="choice-row" aria-pressed={profileAreaId === option.id} data-selected={profileAreaId === option.id ? "true" : "false"} onClick={() => { setProfileAreaId(option.id); setAreaOpen(false); }}><span><strong>{option.label}</strong><small>{option.blurb}</small></span>{profileAreaId === option.id ? <CheckCircle size={21} weight="fill" /> : <ArrowRight size={18} />}</button>)}</div></BottomSheet><BottomSheet open={photoOpen} onOpenChange={setPhotoOpen} title="Your map marker" description="Optional and local to this browser session. Profile photos never appear in routine task cards." snap={0.56}><div className="sheet-form"><section className="profile-photo-setting" aria-labelledby="marker-photo-heading"><h2 id="marker-photo-heading" className="sr-only">Map marker photo</h2><div className="profile-photo-preview"><PersonAvatar src={profilePhoto} initials={profile.initials} size="large" label="Map marker photo preview" /></div><div><strong>{profilePhoto ? "Local marker photo selected" : "Use the default person icon"}</strong><p>This preview powers only your own future map marker. It is not uploaded, synced, stored, or moderated.</p></div><div className="success-actions"><label className="photo-upload-button"><Camera size={18} weight="bold" /> {profilePhoto ? "Choose another" : "Choose photo"}<input type="file" accept="image/*" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; chooseProfilePhoto(file); }} /></label>{profilePhoto ? <button className="text-button" onClick={() => { setProfilePhotos((current) => ({ ...current, [persona]: "" })); setPhotoError(""); }}>Remove photo</button> : null}</div>{photoError ? <p className="form-error" role="alert">{photoError}</p> : null}</section></div></BottomSheet></>
   );
@@ -3565,6 +3645,25 @@ function DeleteAccountScreen() {
         </form>
       </main>
     </MobileScroll>
+  );
+}
+
+/**
+ * A settings group that stays shut until it is asked for. Profile had six of
+ * them open at once, so the things people actually came for were buried under
+ * rows they read past every time. The summary keeps a closed group honest about
+ * what is inside it.
+ */
+function SettingsGroup({ title, summary, children }: { title: string; summary: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="settings-group settings-group-collapsible">
+      <button className="settings-group-toggle" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+        <span><h2>{title}</h2><small>{summary}</small></span>
+        <CaretDown size={18} weight="bold" aria-hidden="true" />
+      </button>
+      {open ? <div className="settings-group-body">{children}</div> : null}
+    </section>
   );
 }
 
