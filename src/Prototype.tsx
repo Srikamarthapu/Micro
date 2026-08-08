@@ -761,7 +761,6 @@ function BottomNav() {
   const items: Array<{ id: TabId; label: string; icon: Icon }> = [
     { id: "nearby", label: "Nearby", icon: MapPin },
     { id: "post", label: "Post", icon: Plus },
-    { id: "activity", label: "Activity", icon: Bell },
     { id: "messages", label: "Messages", icon: ChatCircle },
     { id: "profile", label: "Profile", icon: UserCircle },
   ];
@@ -770,7 +769,9 @@ function BottomNav() {
     <nav className="bottom-nav" aria-label="Primary">
       <div className="bottom-nav-rail">
         {items.map(({ id, label, icon: NavIcon }) => {
-          const isActive = activeTab === id;
+          // Activity is reached from Profile rather than taking a permanent
+          // rail slot, so Profile remains selected while that screen is open.
+          const isActive = activeTab === id || (id === "profile" && activeTab === "activity");
           return (
             <button
               key={id}
