@@ -884,8 +884,8 @@
 .compact-history span { margin-top: 2px; color: var(--micro-ink-soft); font-size: 12px; }
 
 .activity-hero { padding: 18px; border-radius: 20px; background: #f1ece3; }
-.activity-hero h1 { margin: 11px 0 5px; font-size: 31px; }
-.activity-hero p { margin: 0; color: var(--micro-ink-soft); font-size: 13px; }
+.activity-hero h1 { margin: 11px 0 7px; font-size: 31px; }
+.activity-hero p { margin: 0; color: var(--micro-ink-soft); font-size: 15px; line-height: 1.45; }
 .test-mode-banner { margin: 13px 0 20px; background: #edf3f8; color: #3e586f; }
 .timeline { display: grid; margin-bottom: 20px; }
 .timeline-row { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 11px; min-height: 56px; color: #8c929b; }
@@ -912,12 +912,14 @@
 .status-receipt svg { flex: 0 0 auto; }
 .community-notice { margin: 14px 0; border-color: #cbdceb; background: #edf4fb; color: #355d7b; }
 .commitment-brief { display: grid; gap: 0; margin: 14px 0; overflow: hidden; border: 1px solid var(--micro-line); border-radius: 18px; background: #fffdfa; }
-.commitment-brief div { padding: 11px 13px; }
+.commitment-brief div { padding: 15px 16px; }
 .commitment-brief div + div { border-top: 1px dashed var(--micro-line); }
 .commitment-brief span,
 .commitment-brief strong { display: block; }
-.commitment-brief span { color: var(--micro-teal-dark); font-size: 10px; font-weight: 900; text-transform: uppercase; }
-.commitment-brief strong { margin-top: 3px; font-size: 12px; line-height: 1.4; }
+.commitment-brief span { color: var(--micro-teal-dark); font-size: 11px; font-weight: 850; letter-spacing: 0.07em; text-transform: uppercase; }
+/* Scope is read on site, often in a hurry: set it at reading size and let the
+   weight come down, since small bold is harder to read than plain text. */
+.commitment-brief strong { margin-top: 6px; color: var(--micro-ink); font-size: 15.5px; font-weight: 500; line-height: 1.5; }
 .completion-note { margin-top: 13px; }
 .submission-note { margin-top: 13px; padding: 12px; border-radius: 14px; background: #f3eee6; }
 .submission-note span,

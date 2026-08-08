@@ -134,10 +134,28 @@ export function MicroProvider({ children }: { children: ReactNode }) {
   const [ownedTasks, setOwnedTasks] = useState<Task[]>([]);
   // Listings other neighbors published. Empty in demo mode, where there is no
   // account to attribute a post to and nothing to sync with.
+  // Read receipts are per-device by nature, so they live in this browser rather
+  // than the database. Keyed by account, because two accounts share an origin
+  // only when someone signs out and back in.
+  const readStorageKey = auth.session?.user.id ? `micro-thread-reads-${auth.session.user.id}` : "micro-thread-reads-demo";
   const [threadReadAt, setThreadReadAt] = useState<Record<string, number>>({});
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(readStorageKey);
+      setThreadReadAt(stored ? (JSON.parse(stored) as Record<string, number>) : {});
+    } catch {
+      setThreadReadAt({});
+    }
+  }, [readStorageKey]);
   const markThreadRead = useCallback((key: string) => {
-    setThreadReadAt((current) => ({ ...current, [key]: Date.now() }));
-  }, []);
+    setThreadReadAt((current) => {
+      const next = { ...current, [key]: Date.now() };
+      // Storage can be unavailable in private modes; an unsaved receipt is not
+      // worth breaking the thread over.
+      try { window.localStorage.setItem(readStorageKey, JSON.stringify(next)); } catch { /* keep going */ }
+      return next;
+    });
+  }, [readStorageKey]);
   const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
   const [remoteTasksLoaded, setRemoteTasksLoaded] = useState(false);
   const [remoteTasksError, setRemoteTasksError] = useState<string | null>(null);
