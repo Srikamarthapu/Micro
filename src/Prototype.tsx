@@ -25,7 +25,6 @@ import {
   MapPin,
   Minus,
   NavigationArrow,
-  NotePencil,
   Prohibit,
 
   PaperPlaneTilt,
@@ -65,14 +64,9 @@ import {
   type FlowScreen,
 } from "./mobile";
 import {
-  buildCustomTemplate,
   catalogCategories,
   categoryById,
   composeListing,
-  customCompletions,
-  customDurations,
-  customTextProblem,
-  CUSTOM_TEMPLATE_ID,
   defaultSelections,
   searchTemplates,
   taskTemplates,
@@ -1420,7 +1414,6 @@ function TaskCard({ task, selected = false, unavailable = false, blockedReason, 
         <span aria-hidden="true">·</span>
         <strong>{task.mode === "community" ? "Volunteer" : "Fair pay"}</strong>
       </div>
-      {task.customPending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       {blockedReason && !unavailable && !isOwnedListing ? <p className="review-flag blocked-flag"><Warning size={14} weight="fill" /> {blockedReason}</p> : null}
       <button className="primary-button task-cta" disabled={unavailable} onClick={() => onOpen(task)}>{unavailable ? "No longer available" : isOwnedListing ? "Manage listing" : "View task"}</button>
       {/* Prototype only: there is no second account to post from, so a listing
@@ -1869,8 +1862,7 @@ function PostScreen() {
   const publishNonceRef = useRef(crypto.randomUUID());
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedTimeRef = useRef<HTMLButtonElement>(null);
-  const [composingCustom, setComposingCustom] = useState(false);
-  const { mode, templateId, selections, customTitle, customDetails, customCategoryId, customMinutes, customCompletionId, dateChoice, startTime, durationMinutes, privateAddress, coords, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
+  const { mode, templateId, selections, dateChoice, startTime, durationMinutes, privateAddress, coords, amount, photoAcknowledged, photoPreview, riskConfirmed, safetyConfirmed } = postDraft;
   // A shared location names its own neighborhood; without one the listing falls
   // back to the approximate area set in Profile.
   const listingArea = (coords && areaForPoint(coords)) ?? areaById(profileAreaId);
@@ -1879,10 +1871,7 @@ function PostScreen() {
     setPostDraft((current) => ({ ...current, [key]: typeof value === "function" ? (value as (previous: PostDraft[K]) => PostDraft[K])(current[key]) : value }));
   }
 
-  const customInput = { title: customTitle, details: customDetails, categoryId: customCategoryId, minutes: customMinutes, completionId: customCompletionId };
-  const customTemplate = useMemo(() => buildCustomTemplate(customInput), [customCategoryId, customCompletionId, customDetails, customMinutes, customTitle]);
-  const template = templateId === CUSTOM_TEMPLATE_ID ? customTemplate : (templateById(templateId) ?? taskTemplates[0]);
-  const customProblem = customTextProblem(customTitle, customDetails);
+  const template = templateById(templateId) ?? taskTemplates[0];
   // Every published word comes from here: the requester picks a catalog task and
   // answers its bounded options, and the listing is composed from that.
   const composed = useMemo(() => composeListing(template, selections), [selections, template]);
@@ -1898,7 +1887,7 @@ function PostScreen() {
   // The suggestion always stays offered, even when it is not one of the round
   // numbers, so returning to it never needs the draft cleared.
   const durationChoices = useMemo(
-    () => [...new Set([...customDurations, composed.minutes])].sort((first, second) => first - second),
+    () => [...new Set([15, 30, 45, 60, 90, 120, 180, composed.minutes])].sort((first, second) => first - second),
     [composed.minutes],
   );
   const openCategory = openCategoryId ? categoryById(openCategoryId) : undefined;
@@ -1918,7 +1907,6 @@ function PostScreen() {
   const selectTemplate = (next: TaskTemplate) => {
     keyboard.hide();
     const nextSelections = defaultSelections(next);
-    setComposingCustom(false);
     setPostDraft((current) => ({
       ...current,
       templateId: next.id,
@@ -1930,21 +1918,6 @@ function PostScreen() {
       durationMinutes: undefined,
       riskConfirmed: false,
     }));
-    setStep(1);
-  };
-  const useCustomTask = () => {
-    if (customProblem) return;
-    keyboard.hide();
-    setPostDraft((current) => ({
-      ...current,
-      templateId: CUSTOM_TEMPLATE_ID,
-      selections: {},
-      mode: "paid",
-      amount: String(composeListing(buildCustomTemplate(customInput), {}).suggestedPay),
-      durationMinutes: undefined,
-      riskConfirmed: false,
-    }));
-    setComposingCustom(false);
     setStep(1);
   };
   const setChoice = (optionId: string, choiceId: string) => {
@@ -1989,7 +1962,7 @@ function PostScreen() {
   const goStep = (next: number) => { keyboard.hide(); setStep(next); };
   const backToCatalog = () => {
     keyboard.hide();
-    if (template.isCustom) { setComposingCustom(true); } else { setOpenCategoryId(template.categoryId); }
+    setOpenCategoryId(template.categoryId);
     setStep(0);
   };
 
@@ -2056,7 +2029,6 @@ function PostScreen() {
       requesterAvatar: profilePhotos[persona] || undefined,
       ownerPersona: persona,
       youthEligible: template.youthEligible,
-      customPending: template.isCustom || undefined,
     };
     keyboard.hide();
     if (!supabase || auth.demoMode || !auth.session) {
@@ -2077,17 +2049,17 @@ function PostScreen() {
     const { data, error } = await supabase!
       .rpc("publish_task", {
         p_client_nonce: publishNonceRef.current,
-        p_template_id: template.isCustom ? null : template.id,
-        p_selections: template.isCustom ? {} : selections,
+        p_template_id: template.id,
+        p_selections: selections,
         p_mode: created.mode,
         p_earning: created.mode === "community" ? null : created.earning,
         p_starts_at: created.startsAt?.toISOString() ?? null,
         p_private_address: privateAddress.trim(),
-        p_custom_title: template.isCustom ? customTitle.trim() : null,
-        p_custom_description: template.isCustom ? customDetails.trim() : null,
-        p_custom_category_id: template.isCustom ? customCategoryId : null,
-        p_custom_minutes: template.isCustom ? customMinutes : null,
-        p_custom_completion_id: template.isCustom ? customCompletionId : null,
+        p_custom_title: null,
+        p_custom_description: null,
+        p_custom_category_id: null,
+        p_custom_minutes: null,
+        p_custom_completion_id: null,
         // The requester's stated length. The server bounds it and composes
         // everything else, so this is the one figure the browser gets to set.
         p_duration_minutes: listing.minutes,
@@ -2145,11 +2117,11 @@ function PostScreen() {
         <div className="standard-page nav-padded">
           <section className="success-view post-success" role="status" aria-live="polite">
             <span className="success-seal"><CheckCircle size={46} weight="fill" /></span>
-            <p className="eyebrow">{template.isCustom ? "Submitted for review" : "Ready for neighbors"}</p>
-            <h1>{template.isCustom ? "Your custom task is saved." : "Your task is posted."}</h1>
-            <p>{template.isCustom ? `It stays visible to you around ${profileArea} while its wording is reviewed.` : `It is visible around ${profileArea} with an approximate public location.`}</p>
-            <div className="truth-card"><Info size={22} /><div><strong>{auth.demoMode || !auth.session ? "Local demo only" : template.isCustom ? "Awaiting review" : "Saved for your neighbors"}</strong><span>{auth.demoMode || !auth.session ? "This listing lives in this browser session and no other neighbor can see it. Sign in to post for real." : template.isCustom ? "Other neighbors cannot see or accept this custom task until it is approved. Your exact address remains private." : "Neighbors signed in to Micro can see this listing. Your exact address stays private until a match. No payment or notification was created."}</span></div></div>
-            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} pending={template.isCustom} />
+            <p className="eyebrow">Ready for neighbors</p>
+            <h1>Your task is posted.</h1>
+            <p>{`It is visible around ${profileArea} with an approximate public location.`}</p>
+            <div className="truth-card"><Info size={22} /><div><strong>{auth.demoMode || !auth.session ? "Local demo only" : "Saved for your neighbors"}</strong><span>{auth.demoMode || !auth.session ? "This listing lives in this browser session and no other neighbor can see it. Sign in to post for real." : "Neighbors signed in to Micro can see this listing. Your exact address stays private until a match. No payment or notification was created."}</span></div></div>
+            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} />
             <div className="success-actions"><button className="primary-button" onClick={() => setActiveTab("nearby")}>See it in Nearby</button><button className="secondary-button" onClick={() => setActiveTab("activity")}>View Activity</button><button className="text-button" onClick={() => { publishNonceRef.current = crypto.randomUUID(); setPostDraft(initialPostDraft); setPublished(false); setStep(0); setOpenCategoryId(null); setCatalogQuery(""); }}>Post another task</button></div>
           </section>
         </div>
@@ -2182,29 +2154,9 @@ function PostScreen() {
 
         {step === 0 ? (
           <section className="form-section catalog-section">
-            {!composingCustom ? <div className="catalog-search"><MagnifyingGlass size={19} /><KeyboardInput value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onBlur={() => keyboard.hide()} placeholder={`Search ${taskTemplates.length} tasks`} aria-label="Search the task catalog" />{catalogQuery ? <button className="catalog-search-clear" aria-label="Clear search" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}><X size={15} weight="bold" /></button> : null}</div> : null}
+            <div className="catalog-search"><MagnifyingGlass size={19} /><KeyboardInput value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onBlur={() => keyboard.hide()} placeholder={`Search ${taskTemplates.length} tasks`} aria-label="Search the task catalog" />{catalogQuery ? <button className="catalog-search-clear" aria-label="Clear search" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}><X size={15} weight="bold" /></button> : null}</div>
 
-            {composingCustom ? (
-              <>
-                <button className="catalog-crumb" onClick={() => { keyboard.hide(); setComposingCustom(false); }}><CaretLeft size={15} weight="bold" /> Back to search</button>
-                <div className="catalog-category-head">
-                  <span className="category-tile-icon"><NotePencil size={22} weight="duotone" /></span>
-                  <div><strong>Describe the task</strong><small>For work the catalog does not carry yet.</small></div>
-                </div>
-                <div className="boundary-note custom-warning"><Warning size={20} weight="fill" /><span>Catalog tasks are checked for scope and safety before neighbors see them. A task you write yourself is not, so it stays marked as awaiting review and must remain inside the safety boundary of the category you pick.</span></div>
-                <label className="field-label-block">Task title<KeyboardInput value={customTitle} maxLength={60} onChange={(event) => setField("customTitle", event.target.value)} onBlur={() => keyboard.hide()} placeholder="Short and plain" /></label>
-                <label className="field-label-block">What should the helper do?<KeyboardTextarea rows={4} value={customDetails} maxLength={300} onChange={(event) => setField("customDetails", event.target.value)} onBlur={() => keyboard.hide()} placeholder="What the work is, what is provided, and where it happens." /></label>
-                <fieldset className="choice-fieldset"><legend>Closest category</legend><div className="category-grid">{catalogCategories.map((entry) => {
-                  const CategoryIcon = entry.icon;
-                  return <button key={entry.id} className="category-tile" aria-pressed={customCategoryId === entry.id} data-active={customCategoryId === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setField("customCategoryId", entry.id); setRiskConfirmed(false); }}><span className="category-tile-icon"><CategoryIcon size={21} weight="duotone" /></span><span className="category-tile-body"><strong>{entry.label}</strong></span></button>;
-                })}</div></fieldset>
-                <fieldset className="choice-fieldset compact-choice-fieldset"><legend>How long</legend><div className="segmented-row" data-choices={customDurations.length}>{customDurations.map((value) => <button key={value} aria-pressed={customMinutes === value} data-active={customMinutes === value ? "true" : "false"} onClick={() => { keyboard.hide(); setPostDraft((current) => ({ ...current, customMinutes: value, durationMinutes: undefined })); }}>{value} min</button>)}</div></fieldset>
-                <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Completion check</legend><div className="segmented-row" data-choices={customCompletions.length}>{customCompletions.map((entry) => <button key={entry.id} aria-pressed={customCompletionId === entry.id} data-active={customCompletionId === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setField("customCompletionId", entry.id); }}>{entry.label}</button>)}</div></fieldset>
-                <div className="boundary-note"><ShieldCheck size={20} weight="fill" /><span>{categoryById(customCategoryId)?.boundary}</span></div>
-                {customProblem ? <p className="form-error" role="alert">{customProblem}</p> : null}
-                <div className="form-actions"><button className="secondary-button" onClick={() => { keyboard.hide(); setComposingCustom(false); }}>Cancel</button><button className="primary-button" disabled={Boolean(customProblem)} onClick={useCustomTask}>Use this task</button></div>
-              </>
-            ) : catalogQuery.trim() ? (
+            {catalogQuery.trim() ? (
               searchResults.length ? (
                 <>
                   <p className="catalog-block-label">{searchResults.length} {searchResults.length === 1 ? "match" : "matches"} for “{catalogQuery.trim()}”</p>
@@ -2215,7 +2167,6 @@ function PostScreen() {
                   <MagnifyingGlass size={28} aria-hidden="true" />
                   <h2>Nothing matches “{catalogQuery.trim()}”</h2>
                   <p>Micro only publishes tasks that have been reviewed for scope and safety, so there is nothing to write in by hand. Try a plainer word — “leaves”, “boxes”, “dog” — or browse the categories.</p>
-                  <button className="primary-button" onClick={() => { keyboard.hide(); setComposingCustom(true); }}><NotePencil size={18} weight="bold" /> Describe it yourself</button>
                   <button className="text-button" onClick={() => { keyboard.hide(); setCatalogQuery(""); }}>Browse categories instead</button>
                 </div>
               )
@@ -2321,7 +2272,7 @@ function PostScreen() {
             <Carousel ariaLabel="Duration" className="time-rail" contentClassName="time-rail-track">
               {durationChoices.map((value) => <button key={value} className="time-chip" aria-pressed={listing.minutes === value} data-active={listing.minutes === value ? "true" : "false"} onClick={() => setField("durationMinutes", value)}>{value} min</button>)}
             </Carousel>
-            <p className="composed-meta">{listing.minutes === composed.minutes ? `Suggested by ${template.isCustom ? "the length you set" : "the task you picked"}. Change it to match your job.` : `Adjusted by you · ${composed.duration} suggested for this task.`}</p>
+            <p className="composed-meta">{listing.minutes === composed.minutes ? "Suggested by the task you picked. Change it to match your job." : `Adjusted by you · ${composed.duration} suggested for this task.`}</p>
             <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => { setPrivateAddress(event.target.value); setLocationError(""); }} onBlur={() => keyboard.hide()} /></label>
             <button className="secondary-button" disabled={lookingUp || !privateAddress.trim()} onClick={async () => {
               keyboard.hide();
@@ -2364,13 +2315,11 @@ function PostScreen() {
           <section className="form-section">
             <h2 ref={stepHeadingRef} tabIndex={-1} className="form-step-heading">Review the public listing</h2>
             <p className="eyebrow">Public preview</p>
-            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} pending={template.isCustom} />
+            <TaskPreview title={listing.title} details={listing.details} mode={mode} amount={amount} area={profileArea} time={`${dateChoice} · ${startTime}`} duration={listing.duration} icon={template.icon} />
             {photoPreview ? <figure className="post-photo-preview final-photo"><img src={photoPreview} alt="Task photo included in the public preview" /><figcaption>Public task photo · reviewed for private details</figcaption></figure> : null}
             <div className="review-list"><ReviewRow icon={ListChecks} title="Included" text={listing.included} /><ReviewRow icon={X} title="Not included" text={listing.excluded} /><ReviewRow icon={CheckCircle} title="Completion check" text={listing.completion} /><ReviewRow icon={ShieldCheck} title="Cancellation & safety" text="Changes stay in the thread. Issue reports pause automatic payout review." /></div>
             <section className="listing-boundary-card"><div><span>Public before match</span><strong>{profileArea}</strong><small>{modeMeta[mode].label} · {template.category} · {dateChoice} at {startTime}</small></div><div><span>Private after protected match</span><strong>{privateAddress}</strong><small>Released only after assignment and the relevant payment or Community Help state.</small></div><div><span>Eligibility</span><strong>{template.youthEligible ? "Adults and Youth Mode helpers" : "Adults only"}</strong><small>Set by the task you picked, not by the photo or neighborhood.</small></div>{mode !== "community" ? <div><span>{mode === "sponsored" ? "Sponsor" : "Requester"} total</span><strong>${numericAmount + platformFee + processingFee}</strong><small>Helper receives ${numericAmount}; recipient pays {mode === "sponsored" ? "$0" : `$${numericAmount + platformFee + processingFee}`}.</small></div> : <div><span>Compensation</span><strong>Volunteer · $0</strong><small>No payment or payout state will be created.</small></div>}</section>
-            {template.isCustom
-              ? <div className="truth-card custom-truth"><Warning size={22} weight="fill" /><div><strong>You wrote this one</strong><span>It is not from Micro's reviewed catalog, so it remains visible only to you while awaiting review. Its exclusions and safety boundary still come from {template.category}.</span></div></div>
-              : <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>}
+            <div className="truth-card"><ShieldCheck size={22} /><div><strong>Written from Micro's task catalog</strong><span>The wording above comes from the reviewed entry for “{template.title}” and the options you set. Only your private address was typed in.</span></div></div>
             <div className="form-actions"><button className="secondary-button" onClick={() => goStep(2)}>Edit</button><button className="primary-button" disabled={!scopeValid || !logisticsValid || publishing} onClick={publish}>{publishing ? "Publishing…" : "Publish task"}</button></div>
             {publishError ? <p className="form-error" role="alert">{publishError}</p> : null}
           </section>
@@ -2380,13 +2329,12 @@ function PostScreen() {
   );
 }
 
-function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 10 AM", duration = "60 min", icon = Wrench, pending = false }: { title: string; details: string; mode: TaskMode; amount: string; area: string; time?: string; duration?: string; icon?: Icon; pending?: boolean }) {
+function TaskPreview({ title, details, mode, amount, area, time = "Tomorrow · 10 AM", duration = "60 min", icon = Wrench }: { title: string; details: string; mode: TaskMode; amount: string; area: string; time?: string; duration?: string; icon?: Icon }) {
   const ModeIcon = modeMeta[mode].icon;
   const TaskIcon = icon;
   return (
     <article className="task-card preview-card" data-mode={mode} data-selected="true">
       <div className="task-card-top"><span className="task-icon"><TaskIcon size={23} weight="bold" /></span><div className="task-title-block"><div className="mode-badge"><ModeIcon size={13} weight="fill" /> {modeMeta[mode].label}</div><h2>{title}</h2></div>{mode !== "community" ? <div className="earning"><strong>${amount || "0"}</strong><span>You earn</span></div> : null}</div>
-      {pending ? <p className="review-flag"><Warning size={14} weight="fill" /> Custom task · awaiting review</p> : null}
       <p className="task-description">{details}</p>
       <div className="task-facts"><span><MapPin size={17} /> {area}</span><span><CalendarBlank size={17} /> {time}</span><span><Clock size={17} /> {duration}</span></div>
     </article>

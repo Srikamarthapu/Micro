@@ -121,8 +121,6 @@ export type Task = {
   requesterAvatar?: string;
   ownerPersona?: Persona;
   listingPaused?: boolean;
-  /** Requester-described rather than chosen from the reviewed catalog. */
-  customPending?: boolean;
   /** Set when the listing came from Supabase rather than local fixtures. */
   ownerId?: string;
 };
@@ -133,12 +131,6 @@ export type PostDraft = {
   templateId: string;
   /** Answers to that entry's bounded options, keyed by option id. */
   selections: Record<string, string>;
-  /** Set only when the requester described a task the catalog does not carry. */
-  customTitle: string;
-  customDetails: string;
-  customCategoryId: string;
-  customMinutes: number;
-  customCompletionId: string;
   /** One of `dateChoicesFor(now)` — derived from the date, not a fixed enum. */
   dateChoice: string;
   startTime: string;

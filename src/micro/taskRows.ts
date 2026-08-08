@@ -32,6 +32,5 @@ export function taskFromRow(row: Record<string, unknown>): Task {
     requesterInitials: initialsFromName(requesterName),
     youthEligible: Boolean(row.youth_eligible),
     listingPaused: Boolean(row.listing_paused),
-    customPending: Boolean(row.custom_pending) || undefined,
   };
 }

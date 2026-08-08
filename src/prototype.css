@@ -494,7 +494,6 @@
 .boundary-note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px; border: 1px solid #d6e5df; border-radius: 14px; background: #eef6f2; color: #36574f; font-size: 12px; line-height: 1.4; }
 .boundary-note svg { flex: 0 0 auto; color: var(--micro-teal); }
 
-/* Custom tasks — unreviewed, so every surface that shows one says so. */
 .boundary-note.custom-warning { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
 .boundary-note.custom-warning svg { color: var(--micro-orange); }
 .truth-card.custom-truth { border-color: #efd9c0; background: #fdf4e9; color: #7a5626; }
