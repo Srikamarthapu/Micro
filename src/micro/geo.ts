@@ -149,3 +149,40 @@ export function staticMapUrl(center: LatLng, zoom: number, width: number, height
   ];
   return `https://maps.googleapis.com/maps/api/staticmap?${params}&${styles.map((style) => `style=${encodeURIComponent(style)}`).join("&")}`;
 }
+
+/**
+ * Turns a typed address into a point, so a poster who cannot or will not share
+ * a device location can still place their task properly.
+ *
+ * Bounded to Micro's service area and run once on demand — never per keystroke —
+ * so this stays a single lookup rather than a stream of billed calls. Needs the
+ * Geocoding API enabled on the same key that draws the map; when it is not, the
+ * caller is told exactly that rather than being left with a dead field.
+ */
+export async function locateAddress(address: string): Promise<{ point?: LatLng; error?: string }> {
+  type GeocodeHit = { geometry: { location: { lat: () => number; lng: () => number } } };
+  type MinimalGeocoder = { geocode: (request: Record<string, unknown>, callback: (results: GeocodeHit[] | null, status: string) => void) => void };
+  const maps = (window as unknown as { google?: { maps?: { Geocoder?: new () => MinimalGeocoder } } }).google?.maps;
+  if (!maps?.Geocoder) return { error: "The map has not finished loading. Open Nearby once, then try again." };
+
+  const geocoder = new maps.Geocoder();
+  const { status, point } = await new Promise<{ status: string; point?: LatLng }>((resolve) => {
+    geocoder.geocode({ address, componentRestrictions: { country: "us" } }, (results: GeocodeHit[] | null, geocodeStatus: string) => {
+      const first = results?.[0];
+      resolve({
+        status: geocodeStatus,
+        point: first ? { lat: first.geometry.location.lat(), lng: first.geometry.location.lng() } : undefined,
+      });
+    });
+  });
+
+  if (point) {
+    return areaForPoint(point)
+      ? { point }
+      : { error: "That address is outside Micro's neighborhoods, so your area is used instead." };
+  }
+  if (status === "ZERO_RESULTS") return { error: "No match for that address. Add the city, or pick your neighborhood below." };
+  if (status === "REQUEST_DENIED") return { error: "Address lookup is not enabled on this project's Google key. Pick your neighborhood below instead." };
+  if (status === "OVER_QUERY_LIMIT") return { error: "Address lookup is over its quota for now. Pick your neighborhood below instead." };
+  return { error: "That address could not be looked up. Pick your neighborhood below instead." };
+}

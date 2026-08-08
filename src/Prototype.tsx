@@ -80,7 +80,7 @@ import {
   type TaskTemplate,
 } from "./taskCatalog";
 import { supabase } from "./supabase";
-import { areaById, areaForPoint, areas, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, readDeviceLocation, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
+import { areaById, areaForPoint, areas, locateAddress, areaBounds, distanceMiles, formatDistance, mapsApiKey, mapsMapId, pixelOffsetFromCenter, readDeviceLocation, staticMapUrl, type AreaId, type LatLng, type MicroArea } from "./micro/geo";
 import { agoLabel, arrivalWindowMinutes, countdownLabel, dateChoicesFor, hasExpired, minutesUntil, slotsRemainingToday, startLabel, startMoment, startsToday, startTimeSlots } from "./micro/schedule";
 import { type CollaborationState, type TaskAssignment } from "./micro/collaboration";
 import { appendTaskEvent, emptyTaskReview, type AccountType, type CompletionSubmission, type MessageItem, type PaidStage, type Persona, type PostDraft, type TabId, type Task, type TaskEvent, type TaskMode } from "./micro/types";
@@ -2270,7 +2270,17 @@ function PostScreen() {
               {durationChoices.map((value) => <button key={value} className="time-chip" aria-pressed={listing.minutes === value} data-active={listing.minutes === value ? "true" : "false"} onClick={() => setField("durationMinutes", value)}>{value} min</button>)}
             </Carousel>
             <p className="composed-meta">{listing.minutes === composed.minutes ? `Suggested by ${template.isCustom ? "the length you set" : "the task you picked"}. Change it to match your job.` : `Adjusted by you · ${composed.duration} suggested for this task.`}</p>
-            <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => setPrivateAddress(event.target.value)} onBlur={() => keyboard.hide()} /></label>
+            <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => { setPrivateAddress(event.target.value); setLocationError(""); }} onBlur={() => keyboard.hide()} /></label>
+            <button className="secondary-button" disabled={locating || !privateAddress.trim()} onClick={async () => {
+              keyboard.hide();
+              setLocating(true);
+              setLocationError("");
+              const { point, error } = await locateAddress(privateAddress.trim());
+              setLocating(false);
+              if (point) { setField("coords", point); return; }
+              setLocationError(error ?? "That address could not be looked up.");
+            }}>{locating ? "Looking up…" : "Place this address on the map"}</button>
+            <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Or pick the neighborhood</legend><div className="filter-chip-grid">{areas.filter((entry) => entry.id !== "all").map((entry) => <button key={entry.id} type="button" aria-pressed={listingArea.id === entry.id} data-active={listingArea.id === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setLocationError(""); setField("coords", entry.center); }}>{entry.label}</button>)}</div></fieldset>
             {/* The address tells a matched helper which door; the device
                 location tells the map which neighborhood. Optional, because a
                 task is often not where the requester is standing. */}
