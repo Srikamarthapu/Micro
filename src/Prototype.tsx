@@ -1841,6 +1841,10 @@ function PostScreen() {
   // Step 3 reviews the full listing, so the scope rows start folded here.
   const [scopeOpen, setScopeOpen] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [lookingUp, setLookingUp] = useState(false);
+  // Once a location is chosen deliberately, a slow satellite fix that lands
+  // afterwards must not quietly move the task somewhere else.
+  const locationChosenRef = useRef(false);
   const [locationError, setLocationError] = useState("");
   const [locationAsked, setLocationAsked] = useState(false);
 
@@ -1849,6 +1853,7 @@ function PostScreen() {
     setLocationError("");
     const { point, error } = await readDeviceLocation();
     setLocating(false);
+    if (locationChosenRef.current) return;
     if (!point) { setLocationError(error ?? "Your location could not be read."); return; }
     if (!areaForPoint(point)) { setLocationError("You are outside the demo neighborhoods, so the profile area is used instead."); return; }
     setField("coords", point);
@@ -2318,16 +2323,16 @@ function PostScreen() {
             </Carousel>
             <p className="composed-meta">{listing.minutes === composed.minutes ? `Suggested by ${template.isCustom ? "the length you set" : "the task you picked"}. Change it to match your job.` : `Adjusted by you · ${composed.duration} suggested for this task.`}</p>
             <label className="field-label-block">Private match address<KeyboardInput value={privateAddress} onChange={(event) => { setPrivateAddress(event.target.value); setLocationError(""); }} onBlur={() => keyboard.hide()} /></label>
-            <button className="secondary-button" disabled={locating || !privateAddress.trim()} onClick={async () => {
+            <button className="secondary-button" disabled={lookingUp || !privateAddress.trim()} onClick={async () => {
               keyboard.hide();
-              setLocating(true);
+              setLookingUp(true);
               setLocationError("");
               const { point, error } = await locateAddress(privateAddress.trim());
-              setLocating(false);
-              if (point) { setField("coords", point); return; }
+              setLookingUp(false);
+              if (point) { locationChosenRef.current = true; setField("coords", point); return; }
               setLocationError(error ?? "That address could not be looked up.");
-            }}>{locating ? "Looking up…" : "Place this address on the map"}</button>
-            <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Or pick the neighborhood</legend><div className="filter-chip-grid">{areas.filter((entry) => entry.id !== "all").map((entry) => <button key={entry.id} type="button" aria-pressed={listingArea.id === entry.id} data-active={listingArea.id === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setLocationError(""); setField("coords", entry.center); }}>{entry.label}</button>)}</div></fieldset>
+            }}>{lookingUp ? "Looking up…" : "Place this address on the map"}</button>
+            <fieldset className="choice-fieldset compact-choice-fieldset"><legend>Or pick the neighborhood</legend><div className="filter-chip-grid">{areas.filter((entry) => entry.id !== "all").map((entry) => <button key={entry.id} type="button" aria-pressed={listingArea.id === entry.id} data-active={listingArea.id === entry.id ? "true" : "false"} onClick={() => { keyboard.hide(); setLocationError(""); locationChosenRef.current = true; setLocating(false); setField("coords", entry.center); }}>{entry.label}</button>)}</div></fieldset>
             {/* The address tells a matched helper which door; the device
                 location tells the map which neighborhood. Optional, because a
                 task is often not where the requester is standing. */}
@@ -2341,7 +2346,7 @@ function PostScreen() {
                     ? "Micro places the task where you are so neighbors see a real distance."
                     : "Without it the task sits at your neighborhood centre, so distances are rough."}</small>
               </div>
-              <button className="secondary-button" disabled={locating} onClick={() => { keyboard.hide(); void captureLocation(); }}>{locating ? "Locating…" : coords ? "Update" : "Try again"}</button>
+              <button className="secondary-button" disabled={locating} onClick={() => { keyboard.hide(); locationChosenRef.current = false; void captureLocation(); }}>{locating ? "Locating…" : coords ? "Use my device location" : "Try again"}</button>
             </div>
             {coords ? <button className="text-button" onClick={() => setField("coords", undefined)}>Use my profile area instead</button> : null}
             {locationError ? <p className="form-error" role="status">{locationError}</p> : null}
