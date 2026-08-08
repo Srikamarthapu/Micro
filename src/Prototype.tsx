@@ -3402,12 +3402,10 @@ function ProfileScreen() {
     ? {
       initials: initialsFromName(auth.profile.display_name),
       name: auth.profile.display_name,
-      detail: `${profileArea} · ${isLiveNonprofit ? "organization account" : "neighbor account"}`,
-      stats: [
-        [String(ownedByYou.length), "tasks posted"],
-        [String(acceptedTaskIds.length), "accepted in preview"],
-        [isLiveNonprofit ? String(sponsorFunded ? 1 : 0) : "Ready", isLiveNonprofit ? "sponsored in preview" : "neighbor profile"],
-      ] as Array<[string, string]>,
+      detail: profileArea,
+      stats: (isLiveNonprofit
+        ? [[String(ownedByYou.length), "tasks posted"], [String(sponsorFunded ? 1 : 0), "sponsored"]]
+        : [[String(ownedByYou.length), "tasks posted"], [String(activeCommitments), activeCommitments === 1 ? "active job" : "active jobs"]]) as Array<[string, string]>,
       reliability: null,
     }
     : fixtureProfile;
@@ -3441,7 +3439,7 @@ function ProfileScreen() {
         <PageTitle title="Profile" />
         {/* The photo you chose belongs on your own profile, not only on a map
             pin, and the card is where anyone would tap to change it. */}
-        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p><div className="trust-line"><CheckCircle size={16} weight="fill" /> {isLiveAccount ? auth.session?.user.email_confirmed_at ? "Email confirmed" : "Signed-in account" : "Seeded email confirmed"}</div></div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
+        <section className="profile-card"><span className="avatar large">{profile.initials}</span><div><h2>{profile.name}</h2><p>{profile.detail}</p>{isLiveAccount ? null : <div className="trust-line"><CheckCircle size={16} weight="fill" /> Seeded email confirmed</div>}</div><span className="settings-status">{isLiveAccount ? isLiveNonprofit ? "Organization" : "Neighbor" : persona}</span></section>
         <section className="trust-stats">{profile.stats.map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</section>
         {profile.reliability ? <section className="reliability-card"><span><ShieldCheck size={22} weight="fill" /></span><div><strong>{profile.reliability} arrival reliability</strong><small>Based on completed local fixture tasks; no production reputation score is connected.</small></div></section> : null}
         <section className="settings-group">
@@ -3453,7 +3451,7 @@ function ProfileScreen() {
           <h2>Account</h2>
           {isLiveAccount ? <>
             <div className="settings-row settings-row-static"><span className="settings-icon blue"><EnvelopeSimple size={21} weight="fill" /></span><span><strong>Email</strong><small>{auth.session?.user.email ?? "Signed-in account"}</small></span><span className="settings-status">{auth.session?.user.email_confirmed_at ? "Confirmed" : "Active"}</span></div>
-            <div className="settings-row settings-row-static"><span className={`settings-icon ${isLiveNonprofit ? "purple" : ""}`}>{isLiveNonprofit ? <Buildings size={21} weight="fill" /> : <UserCircle size={21} weight="fill" />}</span><span><strong>{isLiveNonprofit ? "Organization account" : "Neighbor account"}</strong><small>{isLiveNonprofit ? "Regular tasks plus permission-gated sponsorship tools" : "Post or accept nearby tasks"}</small></span></div>
+            {isLiveNonprofit ? <div className="settings-row settings-row-static"><span className={`settings-icon ${isLiveNonprofit ? "purple" : ""}`}>{isLiveNonprofit ? <Buildings size={21} weight="fill" /> : <UserCircle size={21} weight="fill" />}</span><span><strong>{isLiveNonprofit ? "Organization account" : "Neighbor account"}</strong><small>{isLiveNonprofit ? "Regular tasks plus permission-gated sponsorship tools" : "Post or accept nearby tasks"}</small></span></div> : null}
             {isLiveNonprofit ? <button className="settings-row organization-settings-row" onClick={() => flow.push(makeOrganizationWorkspaceScreen())}><span className="settings-icon purple"><SealCheck size={21} weight="fill" /></span><span><strong>{auth.organization?.name ?? "Organization workspace"}</strong><small>{organizationStatus === "verified" ? auth.canSponsor ? "Sponsorship requests and funding enabled" : auth.capabilities.can_receive_sponsorship_requests ? "Sponsorship requests enabled · funding locked" : "Verified · sponsorship access not enabled" : organizationStatus === "rejected" ? "Verification needs attention" : organizationStatus === "suspended" ? "Organization access suspended" : "Verification review pending"}</small></span><span className="settings-status">{organizationStatusLabel}</span><ArrowRight size={18} /></button> : null}
           </> : <div className="settings-row settings-row-static"><span className="settings-icon"><UserCircle size={21} weight="fill" /></span><span><strong>Local demo profile</strong><small>No Supabase account is active</small></span></div>}
           <button className="settings-row sign-out-row" disabled={auth.busy} onClick={() => void signOut()}><span className="settings-icon"><SignOut size={21} weight="bold" /></span><span><strong>{isLiveAccount ? "Sign out" : "Exit local demo"}</strong><small>{isLiveAccount ? "Return to Micro's welcome screen" : "Return to account setup"}</small></span><ArrowRight size={18} /></button>
